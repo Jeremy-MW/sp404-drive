@@ -1,0 +1,40 @@
+[package]
+name = "sp404-drive"
+description = "Mount a Roland SP-404MKII as a drive, with its internal storage and SD card as folders"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+publish = false
+
+[[bin]]
+name = "sp404drive"
+path = "src/main.rs"
+
+[dependencies]
+# SparkyMK2's sans-IO protocol crate: message framing and the file API's encoding.
+# Pinned to the commit docs/file-formats.md in the parent folder was compiled from.
+sp404-proto = { git = "https://github.com/TuscanPL/SparkyMK2", rev = "3007b5d4a796ecf752c7866c1cead87d31c5e416" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ctrlc = "3"
+env_logger = "0.11"
+log = "0.4"
+thiserror = "2"
+
+[target.'cfg(windows)'.dependencies]
+winfsp = "0.13"
+# Same major version as winfsp's own, so its NTSTATUS conversions apply.
+windows = { version = "0.61", features = [
+    "Win32_Devices_Communication",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }
