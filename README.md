@@ -189,9 +189,16 @@ src/winfs.rs   Windows front end: WinFsp callbacks -> vfs::Drive.
 src/host.rs    The background host on Windows: serving the drive, and how sp404drive
                starts it (through Explorer, reporting over a named pipe) and stops it
                (a named event and mutex per mount point).
+src/items.rs   Numbered items over vfs::Drive, for FSKit: item numbers, open modes, and
+               the upload when the last writer closes. Unit-tested.
 src/main.rs    sp404drive.exe, the command line.
 src/bin/sp404drive-host.rs
                sp404drive-host.exe, the windowless background process.
+ffi/           The core as a static library with a C interface (crate sp404-ffi):
+               src/lib.rs, include/sp404.h, and a module map so Swift can import it.
+macos/         The Mac app and its FSKit extension (Swift), as an XcodeGen project:
+               Extension/FileSystem.swift (loading, options), Volume.swift (every FSKit
+               call -> sp404.h), Item.swift; build-rust.sh builds ffi/ for Xcode.
 ```
 
 On macOS the serial link works: `sp404drive ports` finds the unit, and
@@ -212,9 +219,9 @@ Login Items & Extensions > Extensions, By Category > File System Extensions. It 
 macOS 26 or later.
 
 `macos/` holds the Xcode project (generated from `project.yml` with
-[XcodeGen](https://github.com/yonaskolb/XcodeGen)). For now its extension is a check, not
-the drive: a read-only volume with one file, `status.txt`, saying whether the sandboxed
-extension could open the unit's serial port. On 2026-11-05 it showed that:
+[XcodeGen](https://github.com/yonaskolb/XcodeGen)). The first version of its extension was
+a check: a read-only volume with one file saying whether the sandboxed extension could open
+the unit's serial port. On 2026-11-05 it showed that:
 
 - the FSKit entitlement (`com.apple.developer.fskit.fsmodule`) is granted in Developer ID
   provisioning profiles;
@@ -225,25 +232,102 @@ extension could open the unit's serial port. On 2026-11-05 it showed that:
 - the sandboxed extension can open `/dev/cu.usbmodem*` (`com.apple.security.device.serial`);
 - the app exports for Developer ID, notarises, and passes Gatekeeper.
 
+### Building the Mac version
+
 ```
 cd macos
 xcodegen generate
-xcodebuild -project SP404Drive.xcodeproj -scheme SP404Drive -allowProvisioningUpdates \
-  -allowProvisioningDeviceRegistration build
+xcodebuild -project SP404Drive.xcodeproj -scheme SP404Drive -configuration Release \
+  -derivedDataPath build -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
 ```
+
+The extension target's first build phase runs `macos/build-rust.sh`, which runs
+`cargo build -p sp404-ffi --target aarch64-apple-darwin` (with `--release` for the Release
+configuration) and links `target/aarch64-apple-darwin/<profile>/libsp404_ffi.a` with IOKit,
+CoreFoundation and libiconv. It finds cargo in `/opt/homebrew/opt/rustup/bin` or
+`~/.cargo/bin`. The phase runs on every build (cargo itself skips work that's up to date)
+and outside Xcode's script sandbox, since cargo reads `~/.cargo` and writes `target/`. For
+now the app is **arm64 only**; an Intel or universal build (a second cargo target and
+`lipo`) is left for later.
+
+### The Mac drive
+
+The extension now serves the real drive: the root holds `Internal` and `SD-Card`, as on
+Windows. Install `SP-404 Drive.app` in `/Applications`, open it once, switch the extension
+on in System Settings (see above), then:
+
+```
+mount -F -t sp404 -r sp404://unit ~/SP404      # read-only (or: -o rdonly)
+mount -F -t sp404 sp404://unit ~/SP404         # read-write (writes: not tested yet)
+umount ~/SP404
+```
+
+How the volume works:
+
+- **Opening and closing the drive.** `loadResource` opens the drive (finding the unit by
+  USB id). A held port (Roland's app) fails the mount with "Resource busy"; a missing unit
+  should fail it with "Operation not supported by device" (not tested). Opening it here rather than in `activate`
+  matters: after a failed `activate`, FSKit keeps the resource loaded and refuses every
+  later mount until the extension process ends; after a failed load it doesn't.
+  Unmounting closes the drive, saving any file still being written and waiting out the
+  unit's session, as on Windows.
+- **Read-only.** `mount -r` and `-o rdonly` don't reach `loadResource`; they arrive in the
+  volume's `activate` as `-o ro` and `-o rdonly`. The volume then asks FSKit for a
+  read-only mount (`requestedMountOptions`), so the kernel refuses changes with "Read-only
+  file system" before they reach the extension. The extension and the core
+  (`sp_drive_set_read_only`) refuse them too, as a backstop; the tests don't reach that far.
+- **Items.** Each FSKit item holds the core's item number (`src/items.rs`); the volume keeps
+  one Swift object per number while FSKit holds it and tells the core when FSKit reclaims
+  it. Directory listings give `.` and `..` when FSKit asks for names only, and cookies that
+  find their place again if the folder changes between calls.
+- **Open, close and writing.** FSKit's open and close calls carry modes (read, write, and
+  the modes kept on close), which the core turns into "upload when the last writer closes",
+  as on Windows.
+- **Names** are case-insensitive and case-preserving, and are passed to the core
+  precomposed (NFC).
+- **Times, permissions, owners, flags.** Every item shows the mount time. Setting times,
+  permissions, owner or flags is accepted and ignored, since the unit keeps none of them;
+  only a file's size can be set.
+- **Extended attributes** are kept in memory, per item, and never reach the unit. macOS
+  sets them on most files it copies (Finder info, quarantine); a volume that refuses them
+  makes macOS write `._` files beside each file instead, which the core refuses anyway (it
+  won't create `._*`, `.DS_Store` or the other Mac housekeeping names). They are lost when
+  FSKit lets an item go, and on unmount. Whether this keeps `._` files away in a Finder copy
+  is not tested yet.
+- **Unplugging.** The core notices at once (the serial read ends), logs it and fails every
+  request from then on; the extension also sets FSKit's container state to "not ready".
+  Whether FSKit then unmounts the volume by itself is not tested; `umount` ends it.
+- **Logging.** The extension's and the core's lines go to the unified log at "notice" level
+  or above, so they're kept:
+  `log show --last 10m --predicate 'subsystem == "com.polecatplugins.sp404drive"'`.
+
+Tested on 2026-11-05 on the unit (macOS 26, Apple Silicon, Release build, mounted
+read-only):
+
+| Test | Result |
+|---|---|
+| Mount (`-o rdonly` and `-r`) | 0.5–0.8 s; `mount` shows `read-only` |
+| `ls -la` of the root, `Internal`, `SD-Card` | correct; `Internal` (21 entries) in 0.03 s |
+| `ls -laR Internal/ROLAND` | 299 lines, 0.53 s |
+| `ls -laR SD-Card` (4652 files) | 12.4 s, no errors |
+| 192 files (86 MB) checksummed, remounted, checksummed again 4 at a time | identical; 27.9 s and 27.6 s (3.1 MB/s with opens) |
+| `cp` of a 162,431,232-byte sample off the card | 41.0 s, 3.96 MB/s; checksum matches a second read after remounting |
+| `mkdir`, `touch`, `>` redirect, `open(O_CREAT)`, `xattr -w` | all refused: "Read-only file system" |
+| Mount while another program holds the port | "Resource busy"; the next mount works |
+| `umount` | 3.0 s just after use (waiting out the session), 0.0 s when idle for 3 s; the port is free afterwards (`lsof`) |
+
+Not tested yet: writing (read-write mounts), Finder, Spotlight and Quick Look, unplugging
+while mounted, a Developer ID export of this version.
 
 Still to do for the Mac version:
 
-1. the Rust core (`vfs`, `store`, `link`) built as a static library with a C interface: the
-   calls `winfs.rs` makes (`lookup`, `list`, `open`, `create`, `read`, `write`, `set_size`,
-   `flush`, `check_delete`/`delete`, `rename`, `release`, `space`);
-2. the extension's volume calling it: `Internal` and `SD-Card`, with FSKit's open and close
-   calls driving the upload of a written file, as on Windows;
-3. Xcode building the Rust library as part of the app;
-4. mounting and unmounting from `sp404drive` (`mount -F`, `umount`) or from the app;
-5. keeping Finder's `._*` and `.DS_Store` files off the unit, and checking that Spotlight and
-   Quick Look don't read whole files;
-6. testing on the unit as on Windows, and a notarised release.
+1. testing writes on the unit (create, write, rename, delete, inside a test folder), and
+   whether Finder copies leave `._` files;
+2. mounting and unmounting from `sp404drive` (`mount -F`, `umount`) or from the app;
+3. checking that Spotlight and Quick Look don't read whole files, and keeping `.DS_Store`
+   off the unit;
+4. unplugging while mounted, and what FSKit does then;
+5. an Intel or universal build, and a notarised release.
 
 ## Contributing
 

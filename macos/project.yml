@@ -11,6 +11,8 @@ settings:
     ENABLE_HARDENED_RUNTIME: YES
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "26.0"
+    # The Rust core is built for arm64 only, for now (see build-rust.sh).
+    ARCHS: arm64
 targets:
   SP404Drive:
     type: application
@@ -59,7 +61,26 @@ targets:
           FSMediaTypes: {}
           FSActivateOptionSyntax:
             shortOptions: "o:"
+    preBuildScripts:
+      - name: Build the Rust core
+        script: |
+          "$PROJECT_DIR/build-rust.sh"
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SP404_RUST_LIB_DIR)/libsp404_ffi.a
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.polecatplugins.sp404drive.fsmodule
         PRODUCT_NAME: SP404FS
+        # The script runs cargo, which reads ~/.cargo and writes ../target.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        SP404_RUST_LIB_DIR: $(PROJECT_DIR)/../target/aarch64-apple-darwin/$(SP404_CARGO_PROFILE)
+        SWIFT_INCLUDE_PATHS: $(PROJECT_DIR)/../ffi/include
+        HEADER_SEARCH_PATHS: $(PROJECT_DIR)/../ffi/include
+        LIBRARY_SEARCH_PATHS: $(SP404_RUST_LIB_DIR)
+        OTHER_LDFLAGS: -lsp404_ffi -framework IOKit -framework CoreFoundation -liconv
+      configs:
+        Debug:
+          SP404_CARGO_PROFILE: debug
+        Release:
+          SP404_CARGO_PROFILE: release

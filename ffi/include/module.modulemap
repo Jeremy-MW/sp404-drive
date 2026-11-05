@@ -1,0 +1,5 @@
+// Lets Swift `import SP404Core` (the macOS FSKit extension). See sp404.h.
+module SP404Core {
+    header "sp404.h"
+    export *
+}

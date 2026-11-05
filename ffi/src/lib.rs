@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -19,6 +19,23 @@ use sp404_drive::vfs::{Drive, FsError, Options};
 
 pub struct SpDrive {
     items: Items,
+    /// Set by [`sp_drive_set_read_only`]: FSKit passes the mount's options only after
+    /// the drive is open.
+    read_only: AtomicBool,
+}
+
+impl SpDrive {
+    fn read_only(&self) -> bool {
+        self.read_only.load(Ordering::Relaxed) || self.items.drive().read_only()
+    }
+
+    fn writable(&self) -> Result<(), i32> {
+        if self.read_only() {
+            Err(libc_errno::EROFS)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// A file or folder: its item number, size and kind.
@@ -255,6 +272,7 @@ pub unsafe extern "C" fn sp_drive_open(
         );
         Ok(SpDrive {
             items: Items::new(Arc::new(drive)),
+            read_only: AtomicBool::new(false),
         })
     }));
     match opened {
@@ -322,7 +340,20 @@ pub unsafe extern "C" fn sp_drive_time(d: *const SpDrive) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sp_drive_read_only(d: *const SpDrive) -> bool {
     // SAFETY: per this function's contract.
-    unsafe { drive(d) }.is_ok_and(|d| d.items.drive().read_only())
+    unsafe { drive(d) }.is_ok_and(|d| d.read_only())
+}
+
+/// Refuse every change from now on (`read_only` true), or stop refusing them (false). A
+/// drive opened read-only stays read-only.
+///
+/// # Safety
+/// `d` is a pointer from [`sp_drive_open`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sp_drive_set_read_only(d: *const SpDrive, read_only: bool) {
+    // SAFETY: per this function's contract.
+    if let Ok(d) = unsafe { drive(d) } {
+        d.read_only.store(read_only, Ordering::Relaxed);
+    }
 }
 
 /// Total and free bytes of the internal storage.
@@ -436,6 +467,9 @@ pub unsafe extern "C" fn sp_open(d: *const SpDrive, id: u64, write: bool) -> i32
     guard(|| {
         // SAFETY: per this function's contract.
         let d = unsafe { drive(d)? };
+        if write {
+            d.writable()?;
+        }
         d.items.open(id, write).map_err(|e| errno(&e))
     })
 }
@@ -496,6 +530,7 @@ pub unsafe extern "C" fn sp_write(
     guard_count(|| {
         // SAFETY: per this function's contract.
         let d = unsafe { drive(d)? };
+        d.writable()?;
         if len == 0 {
             return Ok(0);
         }
@@ -512,6 +547,7 @@ pub unsafe extern "C" fn sp_set_size(d: *const SpDrive, id: u64, size: u64) -> i
     guard(|| {
         // SAFETY: per this function's contract.
         let d = unsafe { drive(d)? };
+        d.writable()?;
         d.items.set_size(id, size).map_err(|e| errno(&e))
     })
 }
@@ -531,6 +567,7 @@ pub unsafe extern "C" fn sp_create(
     guard(|| {
         // SAFETY: per this function's contract.
         let (d, name) = unsafe { (drive(d)?, str_arg(name)?) };
+        d.writable()?;
         let item = d.items.create(dir, name, is_dir).map_err(|e| errno(&e))?;
         // SAFETY: per this function's contract.
         unsafe { *out = SpAttr::from(&item) };
@@ -547,6 +584,7 @@ pub unsafe extern "C" fn sp_remove(d: *const SpDrive, dir: u64, name: *const c_c
     guard(|| {
         // SAFETY: per this function's contract.
         let (d, name) = unsafe { (drive(d)?, str_arg(name)?) };
+        d.writable()?;
         d.items.remove(dir, name).map_err(|e| errno(&e))
     })
 }
@@ -572,6 +610,7 @@ pub unsafe extern "C" fn sp_rename(
         // SAFETY: per this function's contract.
         let (d, from_name, to_name) =
             unsafe { (drive(d)?, str_arg(from_name)?, str_arg(to_name)?) };
+        d.writable()?;
         let name = d
             .items
             .rename(from_dir, from_name, to_dir, to_name, replace)

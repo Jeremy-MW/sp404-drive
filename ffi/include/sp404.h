@@ -40,6 +40,9 @@ SpDrive *sp_drive_open(const char *port, bool read_only, uint32_t cache_secs,
 void sp_drive_close(SpDrive *d);
 int64_t sp_drive_time(const SpDrive *d);
 bool sp_drive_read_only(const SpDrive *d);
+// Refuse every change from now on (true), or stop (false). A drive opened read-only stays
+// read-only.
+void sp_drive_set_read_only(const SpDrive *d, bool read_only);
 void sp_space(const SpDrive *d, uint64_t *total, uint64_t *free);
 
 int32_t sp_lookup(const SpDrive *d, uint64_t dir, const char *name, SpAttr *out,
