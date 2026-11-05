@@ -312,10 +312,15 @@ Measured on the unit, a Release build on macOS 26 on Apple silicon (the tables a
   it, then is thrown away.
 - **The unit's session, the freeze, and live internal storage** are as on Windows (see "How
   it behaves" above). Use `--read-only` when you only want to look at `Internal`.
-- **Unplugging while mounted** is not tested. The drive notices at once (the serial read
-  ends), logs it and fails every request from then on, and tells FSKit the volume is no
-  longer ready; whether macOS then unmounts it by itself, and whether `sp404drive
-  unmount` still works then, is unknown.
+- **Switching the unit off while mounted leaves the volume mounted.** Tested twice on the
+  unit: the drive notices at once (the serial read ends with "Device not configured"),
+  logs "the SP-404MKII went away", fails every request from then on and tells FSKit the
+  volume is no longer ready. macOS doesn't unmount it on that, and FSKit has no call for
+  an extension to unmount its volume. The extension can't do it the way `umount` does
+  either: a test build that called `unmount(2)`, plain and forced, was refused by the
+  sandbox (the kernel logged `deny(1) file-unmount`). So the dead volume stays in Finder
+  until it's ejected or `sp404drive unmount` is run, which then takes 0.03 s and works.
+  To do: the app, which isn't sandboxed, watches for the unit going away and unmounts.
 - **Logging.** The drive's lines go to the unified log at "notice" level or above, so
   they're kept:
   `/usr/bin/log show --last 10m --predicate 'subsystem == "com.polecatplugins.sp404drive"'`.
@@ -616,7 +621,7 @@ Not tested yet:
 
 - Finder: Eject from the sidebar, copies and moves by dragging, `.DS_Store` writes;
   Spotlight and Quick Look (they shouldn't read whole files).
-- Unplugging the unit or switching it off while mounted, and so a real upload failure.
+- A real upload failure: switching the unit off in the middle of a copy.
 - Mounting with no unit attached through `mount -F` (the extension's "not supported by
   device" path; `sp404drive` checks for the unit first).
 - The message when the extension is switched off. `mount -F` of an unknown file system
@@ -630,7 +635,8 @@ Not tested yet:
 Still to do for the Mac version:
 
 1. testing Finder copies and moves, Eject, and Spotlight and Quick Look;
-2. unplugging while mounted, and what FSKit does then;
+2. unmounting when the unit is switched off or unplugged, from the app (the extension's
+   sandbox refuses `unmount(2)`);
 3. an Intel or universal build (a second cargo target and `lipo`);
 4. publishing the release (the zip is built, nothing is published);
 5. perhaps mounting from the app itself (a menu bar item), and at login or plug-in.
