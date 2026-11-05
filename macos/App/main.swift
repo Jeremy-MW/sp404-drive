@@ -1,11 +1,12 @@
-// The app carries the FSKit extension and the sp404drive command; launching it once
-// registers the extension with macOS. No user interface yet.
-import Foundation
+// SP-404 Drive: a menu-bar app. It carries the FSKit extension (macOS registers it when
+// the app is first opened) and the sp404drive command, and mounts and ejects the unit:
+// automatically when it's switched on or off, or from its menu.
+import AppKit
 
-let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/sp404drive").path
-print("""
-    SP-404 Drive: switch on SP-404MKII in System Settings > General > Login Items & \
-    Extensions > Extensions: By Category > File System Extensions.
-    Then mount the unit with: "\(cli)" mount
-    To type just `sp404drive`: sudo ln -sf "\(cli)" /usr/local/bin/sp404drive
-    """)
+MainActor.assumeIsolated {
+    let app = NSApplication.shared
+    let delegate = AppDelegate()
+    app.delegate = delegate
+    app.setActivationPolicy(.accessory)
+    withExtendedLifetime(delegate) { app.run() }
+}

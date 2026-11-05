@@ -181,9 +181,10 @@ from an elevated terminal, so the letter should be visible either way (not teste
 ## macOS
 
 On a Mac the drive is an FSKit file system: Apple's own framework for file systems that
-run outside the kernel. It ships as `SP-404 Drive.app`, which carries the file-system
-extension and the `sp404drive` command. Nothing else needs installing: no macFUSE, no
-kernel extension, no change to the Mac's security settings.
+run outside the kernel. It ships as `SP-404 Drive.app`: a menu-bar app that mounts the
+unit when it's switched on and ejects it when it's switched off, and carries the
+file-system extension and the `sp404drive` command. Nothing else needs installing: no
+macFUSE, no kernel extension, no change to the Mac's security settings.
 
 ### Requirements (macOS)
 
@@ -199,13 +200,17 @@ kernel extension, no change to the Mac's security settings.
 1. Download `SP-404-Drive-<version>-macos-arm64.zip` and open it. (No release has been
    published yet. Until then, build the app as described under "Building from source".)
 2. Move `SP-404 Drive.app` to `/Applications`.
-3. Open it once. It shows no window: opening it registers its file-system extension with
-   macOS.
+3. Open it. It goes in the menu bar (no Dock icon, no window) and registers its
+   file-system extension with macOS. The first time, it says what to do next, with
+   "Open SP-404 Drive at login" ticked: leave it ticked, since the drive is only ejected
+   when the unit's switched off while the app is running.
 4. Switch the extension on, once: System Settings > General > Login Items & Extensions >
    Extensions, choose **By Category**, then **File System Extensions**, and switch on
-   SP-404MKII (SP-404 Drive's extension).
-5. Optional: to type just `sp404drive`, link the command into `/usr/local/bin` (on the
-   default `PATH`) once:
+   SP-404MKII (SP-404 Drive's extension). The welcome message's "Open System Settings"
+   opens that page.
+5. Optional: for the `sp404drive` command in Terminal, choose **Install Command-Line
+   Tool…** in the app's menu (it asks for an administrator's password), or link it into
+   `/usr/local/bin` (on the default `PATH`) yourself:
 
    ```
    sudo mkdir -p /usr/local/bin
@@ -221,12 +226,35 @@ marked as downloaded (quarantined), and the command inside that copy runs. Openi
 downloaded copy by double-clicking it, and switching the extension on for the first time
 on another Mac, are not tested yet.
 
-To update: unmount, replace `SP-404 Drive.app` in `/Applications` with the new one and open
-it once. On this Mac the extension stayed switched on every time the app was replaced.
+To update: eject the drive, quit the app (its menu's Eject and Quit does both), replace
+`SP-404 Drive.app` in `/Applications` with the new one and open it. On this Mac the
+extension stayed switched on every time the app was replaced.
 
 ### Use (macOS)
 
 Quit Roland's SP-404MKII app first. Only one program can use the device's link at a time.
+
+With SP-404 Drive running, switch the SP-404MKII on (or plug it in) and it's mounted;
+switch it off (or unplug it) and it's ejected. The menu-bar icon is the logo: a ring
+while nothing is mounted (dimmed when no unit is connected), a solid disc while the drive
+is mounted. Its menu:
+
+| Item | Does |
+|---|---|
+| (the first line) | what's going on: not connected, connected, mounted, mounted read-only, mounting…, ejecting…, or why the last automatic mount failed |
+| Mount, Mount Read-Only | mount the unit, and open it in Finder |
+| Eject | unmount; returns once everything is saved and the port is free |
+| Show in Finder | open the drive in a Finder window |
+| Mount Automatically When Switched On | on by default; switch it off to mount only from the menu, for example to use Roland's app while the unit's on |
+| Open at Login | start the app when you log in |
+| Install Command-Line Tool… | link `sp404drive` into `/usr/local/bin` |
+| File System Extension Settings… | the System Settings page where the extension is switched on |
+| Quit, or Eject and Quit | quitting ejects first: with the app gone, switching the unit off wouldn't eject the drive |
+
+To use Roland's app with the unit on: Eject, use Roland's app, quit it, then Mount. (After
+an Eject the unit stays unmounted until it's mounted from the menu or switched off and on.)
+
+The `sp404drive` command does the same from Terminal:
 
 ```
 sp404drive ports                 # list connected SP-404MKII units
@@ -251,9 +279,6 @@ The options are the same as on Windows:
 
 `-v` does nothing on the Mac: the drive logs to the unified log (see "How it behaves on
 macOS").
-
-Nothing mounts the drive automatically. To switch to Roland's app, `sp404drive unmount`
-(or eject it), use the app, quit it, then `sp404drive mount` again.
 
 **Before switching the unit off or unplugging it**, make sure nothing is still being
 written. A file is sent to the unit when the program writing it closes it, and its
@@ -320,7 +345,19 @@ Measured on the unit, a Release build on macOS 26 on Apple silicon (the tables a
   either: a test build that called `unmount(2)`, plain and forced, was refused by the
   sandbox (the kernel logged `deny(1) file-unmount`). So the dead volume stays in Finder
   until it's ejected or `sp404drive unmount` is run, which then takes 0.03 s and works.
-  To do: the app, which isn't sandboxed, watches for the unit going away and unmounts.
+  So SP-404 Drive (the app, which isn't sandboxed) watches for the unit's serial port
+  going away, through IOKit notifications, and unmounts its volume: 36–44 ms after the
+  unit was switched off, in the tests, also with the drive open in a Finder window. If
+  the plain unmount is refused (a program has a file open there), it forces it (`umount
+  -f`): nothing can be saved to a unit that's gone. Without the app running, the volume
+  stays as described.
+- **Mounting just after the app's installed or updated** stalled once in seven tries:
+  macOS was still registering the new extension, `fskitd` refused to activate the volume
+  ("previous task is running"), then refused every mount ("resource state is 4") while
+  the extension held the port. The extension now gives up 10 s after loading if the
+  volume hasn't been activated (it lets the port go and exits), and the app retries its
+  launch mount once, 15 s after a failure. The stall didn't recur, so that recovery is not
+  tested.
 - **Logging.** The drive's lines go to the unified log at "notice" level or above, so
   they're kept:
   `/usr/bin/log show --last 10m --predicate 'subsystem == "com.polecatplugins.sp404drive"'`.
@@ -332,10 +369,12 @@ Measured on the unit, a Release build on macOS 26 on Apple silicon (the tables a
 
 Mounting and unmounting:
 
-- **No background process of its own.** The drive runs in the extension, which macOS
-  starts in a process of its own for each mount, so `mount` just runs
-  `mount -F -t sp404 <url> <folder>` and returns once it's mounted. Closing the terminal
-  leaves the drive mounted.
+- **The drive runs in the extension,** which macOS starts in a process of its own for
+  each mount, so `mount` just runs `mount -F -t sp404 <url> <folder>` and returns once
+  it's mounted. Closing the terminal leaves the drive mounted. The menu-bar app mounts and
+  ejects through the `sp404drive` command it carries, so it gets the same checks and
+  messages; it only watches, through IOKit notifications (no polling), for an
+  SP-404MKII's serial port (Roland's USB vendor and product ids) appearing and going.
 - **Where it mounts.** `~/Library/Application Support/SP-404 Drive/SP-404MKII` by
   default, because Finder leaves out volumes mounted in the visible part of the home
   folder. Measured: mounted on `~/SP-404MKII`, the volume was in neither Finder's sidebar
@@ -478,7 +517,7 @@ signs the app after that, so the app's signature covers it. The phases run on ev
 reads `~/.cargo` and writes `target/`. In a Debug build the core's code sits in
 `SP404FS.debug.dylib` beside the extension's executable.
 
-A notarised release (Developer ID), as made for 0.1.0. `notarytool` needs a keychain
+A notarised release (Developer ID), as made for 0.1.0 and 0.1.1. `notarytool` needs a keychain
 profile made once with `xcrun notarytool store-credentials`; this project's is
 `polecat-notary`:
 
@@ -496,7 +535,7 @@ ditto -c -k --keepParent "export/SP-404 Drive.app" submit.zip
 xcrun notarytool submit submit.zip --keychain-profile polecat-notary --wait
 xcrun stapler staple "export/SP-404 Drive.app"
 ditto "export/SP-404 Drive.app" "SP-404 Drive.app"
-ditto -c -k --keepParent "SP-404 Drive.app" SP-404-Drive-0.1.0-macos-arm64.zip
+ditto -c -k --keepParent "SP-404 Drive.app" SP-404-Drive-0.1.1-macos-arm64.zip
 spctl -a -vv "SP-404 Drive.app"
 ```
 
@@ -609,6 +648,17 @@ The notarised release (0.1.0), installed in `/Applications`:
 | Replace the app in `/Applications`, open it once, `sp404drive mount --read-only` | mounted in 0.82 s, with the extension still switched on; the extension process was the notarised one (Developer ID signature); the root, `Internal` (21 entries) and `SD-Card` listed; a 4 MB sample read in 1.05 s (3.9 MB/s); `touch` refused ("Read-only file system") |
 | `sp404drive unmount` | 3.05 s; the port free (`lsof`); `~/SP-404MKII` removed |
 
+The menu-bar app (0.1.1, a development build):
+
+| Test | Result |
+|---|---|
+| Switch the unit on with the app running | mounted |
+| Switch it off | ejected 44 ms after the drive noticed (the drive had nothing unsaved: "drive closed in 0.00 s") |
+| Switch it on again, open the drive in Finder, switch it off | mounted; ejected 36 ms after the drive noticed |
+| Open the app with the unit on (six times, four of them straight after replacing the app) | mounted in 1–2 s; once, after a replacement, the mount stalled (see "How it behaves on macOS") |
+| The welcome message, "Open SP-404 Drive at login" ticked | macOS: "Login Item Added" |
+| The app icon (Icon Composer) rendered by `ictool`: light, dark, clear, tinted | the logo, dark on light grey and light on near-black |
+
 Where Finder shows the volume, depending on the mount folder (screenshots of Finder):
 
 | Mounted on | Finder |
@@ -628,18 +678,19 @@ Not tested yet:
   type prints only "Unable to invoke task", which `sp404drive` reads as "not switched on";
   the switched-off case should look the same.
 - A first install on another Mac: opening the downloaded app by double-clicking it and
-  switching the extension on from scratch.
+  switching the extension on from scratch, and the welcome message's mount right after it.
+- In the menu-bar app: Mount Read-Only, Eject and Quit (and its question when the eject
+  fails), Install Command-Line Tool…, Open at Login across a restart, switching the unit
+  off and straight back on while the old volume is still being unmounted, the forced
+  unmount when a program has a file open on the drive, and the stalled-mount recovery.
 - macOS before 26 (the message), Intel Macs (no build yet), `sp404drive unmount` giving up
   after 60 s, `sudo ln` into `/usr/local/bin` (a link elsewhere on `PATH` was tested).
 
 Still to do for the Mac version:
 
 1. testing Finder copies and moves, Eject, and Spotlight and Quick Look;
-2. unmounting when the unit is switched off or unplugged, from the app (the extension's
-   sandbox refuses `unmount(2)`);
-3. an Intel or universal build (a second cargo target and `lipo`);
-4. publishing the release (the zip is built, nothing is published);
-5. perhaps mounting from the app itself (a menu bar item), and at login or plug-in.
+2. an Intel or universal build (a second cargo target and `lipo`);
+3. publishing the release.
 
 ## Code layout
 
@@ -668,9 +719,12 @@ ffi/           The macOS core as a static library with a C interface (crate sp40
                space, logging; errors as errno values; panics caught), include/sp404.h,
                and include/module.modulemap so Swift can import it as SP404Core.
 macos/         The Mac app and its FSKit extension (Swift), as an XcodeGen project
-               (project.yml): App/main.swift (the app, which only carries the extension
-               and the command), Extension/FileSystem.swift (loading the resource, the
-               URL's settings), Extension/Volume.swift (every FSKit call -> sp404.h),
+               (project.yml): the menu-bar app in App/ (AppDelegate.swift: the menu,
+               mounting on switch-on and unmounting on switch-off; UnitWatcher.swift:
+               IOKit notifications for the unit's serial port; Drive.swift: runs
+               sp404drive, reads the mount table; AppIcon.icon: the Icon Composer app
+               icon), Extension/FileSystem.swift (loading the resource, the URL's
+               settings, giving up on a load that's never activated), Extension/Volume.swift (every FSKit call -> sp404.h),
                Extension/Item.swift (an item and its in-memory extended attributes),
                build-rust.sh (builds ffi/ and the sp404drive command for Xcode), and
                ExportOptions.plist (the Developer ID export).

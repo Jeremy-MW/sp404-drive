@@ -75,6 +75,10 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
 
     var requestedMountOptions: FSVolume.MountOptions = []
 
+    private var _activated = false
+    /// Whether FSKit has activated the volume since loadResource (under `stateLock`).
+    var activated: Bool { stateLock.withLock { _activated } }
+
     init(fileSystem: SP404FileSystem, settings: MountSettings, readOnly: Bool) {
         self.fileSystem = fileSystem
         self.settings = settings
@@ -279,6 +283,7 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
             return replyHandler(nil, error)
         }
         setReadOnly(readOnly)
+        stateLock.withLock { _activated = true }
         replyHandler(root, nil)
     }
 

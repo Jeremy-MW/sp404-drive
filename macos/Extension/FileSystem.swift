@@ -197,6 +197,24 @@ final class SP404FileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @un
         lock.withLock { self.volume = volume }
         containerStatus = .ready
         replyHandler(volume, nil)
+        abandonIfNotActivated(volume)
+    }
+
+    /// Activate follows a load within a second. Mounting just as macOS registers the
+    /// extension (the app opened straight after an install or update) can leave it loaded
+    /// and never activated: fskitd says "previous task is running", then refuses every
+    /// mount ("resource state is 4") while this process holds the port. So if activate
+    /// hasn't come in 10 s, let the port go and exit; FSKit forgets the resource with the
+    /// process, and the next mount starts afresh. Nothing is mounted, so nothing is lost.
+    private func abandonIfNotActivated(_ volume: Volume) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10) { [weak self, weak volume] in
+            guard let self, let volume, !volume.activated,
+                self.lock.withLock({ self.volume === volume })
+            else { return }
+            log.error("no activate 10 s after loadResource; closing the drive and exiting")
+            volume.closeDrive()
+            exit(0)
+        }
     }
 
     func unloadResource(
