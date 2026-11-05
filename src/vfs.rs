@@ -28,6 +28,9 @@ const MAX_HANDLES: usize = 8;
 const FREE_SPACE_TTL: Duration = Duration::from_secs(10);
 /// Reported when the device gives no free-space figure, so copies are not refused.
 const UNKNOWN_FREE: u64 = 64 << 30;
+/// The internal storage's published size. The device reports only its free space, so used
+/// space is this minus that: files, file system structures and any reserved area.
+const INTERNAL_TOTAL: u64 = 16_000_000_000;
 /// Longest path the device's rename request can carry (a 200-byte slot with its NUL).
 const MAX_REMOTE_PATH: usize = 199;
 
@@ -995,18 +998,19 @@ impl Drive {
 
     // ---- the volume --------------------------------------------------------------------
 
-    /// (total, free) bytes. Only the internal storage reports free space; the total is
-    /// unknown, so it is reported equal to the free space.
+    /// (total, free) bytes of the internal storage: its published size, and the free space
+    /// the device reports. The card reports neither.
     pub fn space(&self) -> (u64, u64) {
         let mut cached = self.free.lock().unwrap();
-        if let Some((at, free)) = *cached
-            && at.elapsed() < FREE_SPACE_TTL
-        {
-            return (free, free);
-        }
-        let free = self.store.free_bytes().unwrap_or(UNKNOWN_FREE);
-        *cached = Some((Instant::now(), free));
-        (free, free)
+        let free = match *cached {
+            Some((at, free)) if at.elapsed() < FREE_SPACE_TTL => free,
+            _ => {
+                let free = self.store.free_bytes().unwrap_or(UNKNOWN_FREE);
+                *cached = Some((Instant::now(), free));
+                free
+            }
+        };
+        (INTERNAL_TOTAL.max(free), free)
     }
 }
 
@@ -1335,6 +1339,13 @@ mod tests {
         assert_eq!(s.open_handles(), 1);
         d.shutdown();
         assert_eq!(s.open_handles(), 1);
+    }
+
+    #[test]
+    fn reports_the_internal_storage_size() {
+        // MemStore reports 1 GiB free.
+        let d = drive(&sample());
+        assert_eq!(d.space(), (16_000_000_000, 1 << 30));
     }
 
     #[test]

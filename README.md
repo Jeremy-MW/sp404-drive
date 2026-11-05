@@ -139,9 +139,11 @@ Options:
   are separate filesystems on the device. Explorer and other tools do this automatically.
 - **No dates.** The device keeps no timestamps, so every file shows the time the drive was
   mounted.
-- **Capacity.** Free space comes from the internal storage. The device doesn't report its
-  total size or anything for the card, so the drive reports the total as equal to the free
-  space.
+- **Capacity.** The size Windows shows for the drive is the unit's internal storage: its
+  published 16 GB (shown as 14.9 GB, as Windows counts in binary units) and the free space
+  the unit reports. Used space is the difference, so it includes the file system's own
+  structures, as on any drive. The card's size and free space aren't available over USB,
+  so the figures don't cover `SD-Card`.
 - **The unit's session, and a freeze.** Every message from a computer starts or extends
   a session of about 2.2-2.5 seconds on the unit. While it lasts, each pad hit makes the
   unit send a message back. If the port closes during a session while pads are being hit
