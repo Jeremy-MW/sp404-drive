@@ -1,8 +1,8 @@
 # sp404-drive
 
 Mount a Roland SP-404MKII as a drive, on Windows or macOS. Plug the unit in over USB and
-it appears as a drive letter on Windows (a folder on a Mac, `~/SP-404MKII`) with two
-folders:
+it appears as a drive letter on Windows (on a Mac, SP-404MKII in Finder's sidebar) with
+two folders:
 
 ```
 S:\
@@ -230,17 +230,16 @@ Quit Roland's SP-404MKII app first. Only one program can use the device's link a
 
 ```
 sp404drive ports                 # list connected SP-404MKII units
-sp404drive mount                 # mount on ~/SP-404MKII (or: sp404drive mount <folder>)
+sp404drive mount                 # mount it (or: sp404drive mount <folder>)
 sp404drive mount --read-only     # refuse all changes
 sp404drive unmount               # unmount, and wait until it's gone and the port is free
 ```
 
-The drive appears at `~/SP-404MKII` (in Finder: Go > Home), holding `Internal` and
-`SD-Card`, as on Windows. `mount` creates the folder and `unmount` removes it. The volume
-counts as browsable, so it should also be listed in Finder's sidebar under Locations, and
-Finder's Eject should unmount it (both not tested yet; `diskutil unmount`, which takes the
-same route as Eject, is tested). An ejected volume leaves the empty folder behind, and the
-next `mount` uses it.
+The drive appears in Finder's sidebar as SP-404MKII, under Locations, with an Eject
+button, holding `Internal` and `SD-Card`, as on Windows. In Terminal it's at
+`~/Library/Application Support/SP-404 Drive/SP-404MKII`. `mount` creates that folder and
+`unmount` removes it. An ejected volume leaves the empty folder behind, and the next
+`mount` uses it.
 
 The options are the same as on Windows:
 
@@ -332,7 +331,13 @@ Mounting and unmounting:
   starts in a process of its own for each mount, so `mount` just runs
   `mount -F -t sp404 <url> <folder>` and returns once it's mounted. Closing the terminal
   leaves the drive mounted.
-- **Where it mounts.** `~/SP-404MKII` by default. `/Volumes` isn't possible for an
+- **Where it mounts.** `~/Library/Application Support/SP-404 Drive/SP-404MKII` by
+  default, because Finder leaves out volumes mounted in the visible part of the home
+  folder. Measured: mounted on `~/SP-404MKII`, the volume was in neither Finder's sidebar
+  nor its Computer view; under `~/Library` it is in both, as a "Remote Volume" with an
+  Eject button (the kernel doesn't mark FSKit volumes without a disk as local, and FSKit
+  has no option for it). Apple's forum has the same report for another FSKit volume.
+  `/Volumes` isn't possible for an
   ordinary user: it belongs to root, `mount -F` doesn't create the folder ("invalid file
   system"), and macOS's network-mount route (NetFS, as Finder's "Connect to Server" uses)
   refuses the `sp404` scheme ("Operation not supported"). Another folder must be empty
@@ -599,9 +604,17 @@ The notarised release (0.1.0), installed in `/Applications`:
 | Replace the app in `/Applications`, open it once, `sp404drive mount --read-only` | mounted in 0.82 s, with the extension still switched on; the extension process was the notarised one (Developer ID signature); the root, `Internal` (21 entries) and `SD-Card` listed; a 4 MB sample read in 1.05 s (3.9 MB/s); `touch` refused ("Read-only file system") |
 | `sp404drive unmount` | 3.05 s; the port free (`lsof`); `~/SP-404MKII` removed |
 
+Where Finder shows the volume, depending on the mount folder (screenshots of Finder):
+
+| Mounted on | Finder |
+|---|---|
+| `~/SP-404MKII` | in neither the sidebar nor the Computer view |
+| `/Users/Shared/SP-404MKII` | in the Computer view, as a "Remote Volume" with an Eject button |
+| `~/Library/Application Support/SP-404 Drive/SP-404MKII` (the default now) | in the sidebar under Locations, with an Eject button, and in the Computer view; `sp404drive mount` creates the folders (0.51 s) |
+
 Not tested yet:
 
-- Finder: the sidebar entry, Eject, copies and moves by dragging, `.DS_Store` writes;
+- Finder: Eject from the sidebar, copies and moves by dragging, `.DS_Store` writes;
   Spotlight and Quick Look (they shouldn't read whole files).
 - Unplugging the unit or switching it off while mounted, and so a real upload failure.
 - Mounting with no unit attached through `mount -F` (the extension's "not supported by
@@ -616,7 +629,7 @@ Not tested yet:
 
 Still to do for the Mac version:
 
-1. testing Finder copies and moves, Eject and the sidebar, and Spotlight and Quick Look;
+1. testing Finder copies and moves, Eject, and Spotlight and Quick Look;
 2. unplugging while mounted, and what FSKit does then;
 3. an Intel or universal build (a second cargo target and `lipo`);
 4. publishing the release (the zip is built, nothing is published);

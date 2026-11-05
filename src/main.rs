@@ -2,10 +2,12 @@ use clap::{Parser, Subcommand};
 
 #[cfg(windows)]
 const DEFAULT_MOUNT: &str = "S:";
-// /Volumes belongs to root, and FSKit doesn't create mount points: a folder in the home
-// folder, created by `mount` and removed by `unmount`.
+// /Volumes belongs to root, and FSKit doesn't create mount points: a folder created by
+// `mount` and removed by `unmount`. Finder leaves out volumes mounted in the visible part of
+// the home folder (`~/SP-404MKII` was in neither the sidebar nor the Computer view); under
+// ~/Library it shows the volume under Locations, with an Eject button (measured, macOS 26).
 #[cfg(not(windows))]
-const DEFAULT_MOUNT: &str = "~/SP-404MKII";
+const DEFAULT_MOUNT: &str = "~/Library/Application Support/SP-404 Drive/SP-404MKII";
 
 #[derive(Parser)]
 #[command(

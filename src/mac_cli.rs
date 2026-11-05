@@ -70,6 +70,11 @@ pub fn mount(
         }
     }
 
+    if folder == default
+        && let Some(parent) = folder.parent()
+    {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
     let created = prepare_folder(&folder)?;
     let url = resource_url(&port, cache_secs, read_only);
     let mut cmd = Command::new("/sbin/mount");
@@ -111,6 +116,9 @@ pub fn mount(
         folder.display(),
         if read_only { ", read-only" } else { "" }
     );
+    if folder == default {
+        println!("In Finder it's SP-404MKII, under Locations in the sidebar.");
+    }
     println!("Unmount with `sp404drive unmount`, or eject it in Finder.");
     Ok(())
 }
