@@ -118,6 +118,8 @@ Options:
 - **Speed.** Everything goes over the device's serial link. Reads and writes run at about
   3.8 MB/s. A folder listing needs one request per file to learn its size; a full `SMPL`
   folder (150 samples) takes about 0.3 seconds to list. Listings are cached for 5 seconds.
+  On an exFAT card (the usual format above 32 GB) the unit takes 2–3 times as long to find
+  each file, so listings and opens are that much slower; reading data is not affected.
 - **Open files after a pause.** The unit closes every open file once nothing has been
   asked of it for about 2 seconds, without saying so, and gives the same handle numbers to
   the next files opened. The drive keeps up to 8 files open between reads, so after a pause
