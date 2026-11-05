@@ -11,6 +11,9 @@ S:\
 
 Explorer, DAWs and the command line can browse, copy, create, rename and delete files on it.
 
+> Not affiliated with or endorsed by Roland Corporation. "SP-404MKII" and "Roland" are
+> trademarks of Roland Corporation.
+
 The drive talks to the device over its USB serial port, using the protocol mapped by
 [SparkyMK2](https://github.com/TuscanPL/SparkyMK2). Message framing and the file API's
 encoding come from SparkyMK2's `sp404-proto` crate, pinned to commit `3007b5d`. The
@@ -87,6 +90,19 @@ and across reboots, until you run `sp404drive mount` again. To switch to the app
 If you skip step 1, the app won't find the unit, because the drive holds the port. If the
 app is still open at step 3, `mount` reports that the port is busy and asks whether the
 app is still connected.
+
+**Before switching the unit off or unplugging it**, make sure nothing is still being
+written:
+
+- A file is sent to the unit when the program writing it closes it, and Windows waits
+  until the unit has confirmed it. So an Explorer copy is finished when its dialog closes
+  (its progress bar sits near 100% while the file goes over, at about 3.7 MB/s). A file
+  written by another program, such as a DAW render, is sent when that program closes it.
+- For certainty, run `sp404drive unmount` first. It saves anything still waiting and only
+  says "Unmounted" once the unit has confirmed. This is the drive's "Safely Remove".
+
+If the unit loses power during an upload, the file on it is left incomplete, and the
+program that wrote it isn't told; only the log records the failure.
 
 Options:
 
@@ -204,7 +220,7 @@ The crate's other files (`pad.rs`, `params.rs`, `settings.rs`) are compiled beca
 - tolerating the SD card's refusal to close a finished directory listing;
 - the 350 ms pause after opening the port.
 
-`sp404-device` itself was a dependency in the first commit, but not any more. Its 2 ms polling loop is why we replaced its connection layer.
+`sp404-device` itself was a dependency in the first commit, but not any more. Its connection reads the port in a short-timeout loop, a sensible fit for an interactive app; a drive that sits in the background for hours needed a link that waits for the device without waking up, so we wrote our own connection layer and kept the protocol code.
 
 **3. Copied: `LICENSE`**, the GPL-3.0 text.
 
@@ -212,6 +228,17 @@ The crate's other files (`pad.rs`, `params.rs`, `settings.rs`) are compiled beca
 - `docs/re/01-transport.md` and `00-findings.md` shaped the design: the two volumes, `opendir` not reporting missing folders, the file-API commands.
 - Sparky's CLI (`crates/sp404-cli`) was built once at the start of the project to check the link to the unit worked. It isn't used now.
 - Sparky's `sp404-formats` crate (the SMP, `PADCONF.BIN` and pattern parsers) isn't used at all, because the drive only moves files around and never interprets them.
+
+## How it was made
+
+The drive follows SparkyMK2's clean-room approach: it contains no Roland code, firmware or
+assets. What it knows about the device comes from SparkyMK2's published specifications
+and code, and from testing against a real SP-404MKII.
+
+Like SparkyMK2, it is largely AI-written. An AI assistant (Claude) wrote most of the code
+and documentation, working with the author, and the drive was tried on a real unit:
+browsing both volumes, reading and writing files, renaming and deleting, unmounting, and
+unplugging while mounted. Anything not yet tested is marked as such in this README.
 
 ## License
 

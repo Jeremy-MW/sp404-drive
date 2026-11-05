@@ -1,11 +1,16 @@
 //! The serial link to the SP-404MKII, without polling.
 //!
-//! SparkyMK2's `sp404-device` reads the port in a loop with a 2 ms timeout (50 ms off
-//! Windows). This module replaces that layer: a reader thread blocks on the port until
-//! bytes arrive, and a vanished device fails the pending read at once, which is how the
-//! drive learns it was unplugged. Message framing and the file API's encoding still come
-//! from SparkyMK2's sans-IO `sp404-proto` crate; the request/reply logic below follows
-//! `sp404-device`'s `files.rs` (GPL-3.0).
+//! Portions of this file are adapted from SparkyMK2
+//! (https://github.com/TuscanPL/SparkyMK2), `crates/sp404-device/src/files.rs` at commit
+//! 3007b5d, by the SparkyMK2 contributors, licensed GPL-3.0-or-later. Modified in
+//! November 2026 for sp404-drive: the request/reply logic now runs over this module's
+//! own event-driven link instead of `sp404-device`'s connection.
+//!
+//! The drive runs in the background for hours, so the link waits for the device instead
+//! of reading on a timer: a reader thread blocks on the port until bytes arrive, and a
+//! vanished device fails the pending read at once, which is how the drive learns it was
+//! unplugged. Message framing and the file API's encoding come from SparkyMK2's sans-IO
+//! `sp404-proto` crate.
 //!
 //! The OS-specific part is a [`Port`]: Windows overlapped I/O in `windows.rs`. A macOS
 //! port is a blocking `read(2)` on the `/dev/cu.*` file descriptor.
