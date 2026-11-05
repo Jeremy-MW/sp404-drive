@@ -8,12 +8,11 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, anyhow, bail};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HLOCAL, LocalFree, NTSTATUS,
-    STATUS_ACCESS_DENIED, STATUS_BUFFER_OVERFLOW, STATUS_DEVICE_NOT_CONNECTED,
-    STATUS_DIRECTORY_NOT_EMPTY, STATUS_END_OF_FILE, STATUS_FILE_IS_A_DIRECTORY,
-    STATUS_IO_DEVICE_ERROR, STATUS_MEDIA_WRITE_PROTECTED, STATUS_NOT_A_DIRECTORY,
-    STATUS_NOT_SAME_DEVICE, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID,
-    STATUS_OBJECT_NAME_NOT_FOUND,
+    HLOCAL, LocalFree, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_BUFFER_OVERFLOW,
+    STATUS_DEVICE_NOT_CONNECTED, STATUS_DIRECTORY_NOT_EMPTY, STATUS_END_OF_FILE,
+    STATUS_FILE_IS_A_DIRECTORY, STATUS_IO_DEVICE_ERROR, STATUS_MEDIA_WRITE_PROTECTED,
+    STATUS_NOT_A_DIRECTORY, STATUS_NOT_SAME_DEVICE, STATUS_OBJECT_NAME_COLLISION,
+    STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND,
 };
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -22,9 +21,6 @@ use windows::Win32::Security::PSECURITY_DESCRIPTOR;
 use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY};
 use windows::Win32::System::LibraryLoader::LoadLibraryW;
 use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
-use windows::Win32::System::Threading::{
-    CreateEventW, EVENT_MODIFY_STATE, INFINITE, OpenEventW, SetEvent, WaitForSingleObject,
-};
 use windows::core::{HSTRING, PCWSTR, w};
 use winfsp::filesystem::{
     DirBuffer, DirInfo, DirMarker, FileInfo, FileSecurity, FileSystemContext, OpenFileInfo,
@@ -432,8 +428,13 @@ fn load_winfsp() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Mount `drive` at `mount_point` and serve it until `stop` fires.
-pub fn run(drive: Arc<Drive>, mount_point: &str, stop: Receiver<String>) -> anyhow::Result<()> {
+/// Mount `drive` at `mount_point`, call `on_mounted`, and serve it until `stop` fires.
+pub fn run(
+    drive: Arc<Drive>,
+    mount_point: &str,
+    on_mounted: impl FnOnce(),
+    stop: Receiver<String>,
+) -> anyhow::Result<()> {
     load_winfsp()?;
     let mut params = VolumeParams::new();
     params
@@ -463,13 +464,14 @@ pub fn run(drive: Arc<Drive>, mount_point: &str, stop: Receiver<String>) -> anyh
     host.start()
         .map_err(|e| anyhow!("starting the file system: {e}"))?;
     log::info!(
-        "SP-404MKII mounted at {mount_point}{}; `sp404drive unmount {mount_point}` or Ctrl+C to unmount",
+        "SP-404MKII mounted at {mount_point}{}",
         if drive.read_only() {
             " (read-only)"
         } else {
             ""
         }
     );
+    on_mounted();
 
     let reason = stop.recv().unwrap_or_else(|_| "stopping".into());
     log::info!("{reason}: unmounting {mount_point}");
@@ -478,61 +480,5 @@ pub fn run(drive: Arc<Drive>, mount_point: &str, stop: Receiver<String>) -> anyh
     drive.shutdown();
     drop(host);
     log::info!("unmounted");
-    Ok(())
-}
-
-fn event_name(mount_point: &str) -> HSTRING {
-    let tag: String = mount_point
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    HSTRING::from(format!("Local\\sp404drive-unmount-{tag}"))
-}
-
-/// Wait in the background for `sp404drive unmount` aimed at `mount_point`, then call
-/// `on_signal`.
-pub fn listen_for_unmount(
-    mount_point: &str,
-    on_signal: impl FnOnce() + Send + 'static,
-) -> anyhow::Result<()> {
-    let name = event_name(mount_point);
-    // SAFETY: plain named-event creation; the handle is closed after the wait.
-    let event = unsafe { CreateEventW(None, true, false, &name)? };
-    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        unsafe { CloseHandle(event)? };
-        bail!("another sp404drive already serves {mount_point}");
-    }
-    let raw = event.0 as usize;
-    std::thread::Builder::new()
-        .name("unmount-listener".into())
-        .spawn(move || {
-            let event = HANDLE(raw as *mut c_void);
-            // SAFETY: the handle stays open for the life of this thread.
-            unsafe {
-                WaitForSingleObject(event, INFINITE);
-                let _ = CloseHandle(event);
-            }
-            on_signal();
-        })?;
-    Ok(())
-}
-
-/// Ask the `sp404drive mount` process serving `mount_point` to unmount.
-pub fn signal_unmount(mount_point: &str) -> anyhow::Result<()> {
-    let name = event_name(mount_point);
-    // SAFETY: open, signal and close a named event.
-    unsafe {
-        let event = OpenEventW(EVENT_MODIFY_STATE, false, &name)
-            .map_err(|_| anyhow!("nothing is mounted at {mount_point} by sp404drive"))?;
-        let result = SetEvent(event);
-        let _ = CloseHandle(event);
-        result?;
-    }
     Ok(())
 }

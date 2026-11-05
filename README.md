@@ -31,7 +31,17 @@ uses no CPU and none of its threads wake up.
 cargo build --release
 ```
 
-The binary is `target\release\sp404drive.exe`.
+This builds two programs in `target\release\`, which belong in the same folder:
+
+- `sp404drive.exe`: the command you type.
+- `sp404drive-host.exe`: the drive itself, run in the background. It's built as a Windows
+  GUI program that creates no window, so it never has a window or a console, whoever
+  starts it.
+
+## Install
+
+Copy both into `%LOCALAPPDATA%\Programs\sp404drive\` and add that folder to your user
+PATH. To update, unmount, then copy the new pair over the old.
 
 ## Use
 
@@ -40,18 +50,29 @@ Quit Roland's SP-404MKII app first. Only one program can use the device's link a
 ```
 sp404drive ports               # list connected SP-404MKII units
 sp404drive mount               # mount on S: (or: sp404drive mount T:, or an empty folder)
-sp404drive unmount             # unmount S: from another console
+sp404drive unmount             # unmount S:, and wait until it's gone
 ```
 
-`mount` keeps running while the drive is mounted. It unmounts when you:
+`mount` always runs the drive in the background. It asks Explorer to start
+`sp404drive-host.exe`, as if from the Run box, waits for the host to report through a
+named pipe that the drive is mounted (or why it isn't), and returns. Because Explorer
+starts it, the drive is independent of whatever ran `mount`: closing that terminal (or
+Claude Code, or an IDE), or pressing Ctrl+C in it, leaves the drive mounted. `mount`
+needs Explorer's desktop to be running, and says so if it isn't. Mounting a second time
+on the same letter is refused.
 
-- run `sp404drive unmount [S:]`,
-- press Ctrl+C in its console, or
+The drive unmounts when you:
+
+- run `sp404drive unmount [S:]`, or
 - unplug the device or switch it off. The serial read that is always waiting on the port
   fails at that moment, and the drive unmounts. Nothing polls.
 
 On the way out, it saves any file still being written and takes the device off its
-remote screen (the app's "MKII EXIT").
+remote screen (the app's "MKII EXIT"). Signing out of Windows ends it without that
+cleanup.
+
+The drive logs to `%LOCALAPPDATA%\sp404drive\logs\S.log` (one file per mount point,
+started afresh on each mount).
 
 Options:
 
@@ -60,7 +81,7 @@ Options:
 | `--port COM4` | use this serial port instead of the first SP-404MKII found |
 | `--read-only` | refuse all changes |
 | `--cache-secs N` | reuse a folder listing for N seconds (default 5) |
-| `-v`, `-vv` | debug or trace logging |
+| `-v`, `-vv` | debug or trace logging in the log file |
 
 ## How it behaves
 
@@ -89,7 +110,7 @@ Options:
 
 | Option | Status |
 |---|---|
-| `sp404drive mount` / `unmount` / Ctrl+C | implemented |
+| `sp404drive mount` (always in the background) / `unmount` | implemented |
 | Unmount on unplug (event-driven) | implemented |
 | Mount on an empty NTFS folder instead of a letter (`sp404drive mount C:\SP404`) | implemented (WinFsp supports it); not tested yet |
 | Start at login: a shortcut to `sp404drive mount` in `shell:startup`, or a Task Scheduler task | should work as is; not tested |
@@ -98,8 +119,9 @@ Options:
 | Tray icon with Mount/Unmount | not yet |
 
 A WinFsp drive has no "Safely Remove" or "Eject" entry. Unmounting is the equivalent.
-Don't run `mount` elevated: a drive letter created by an elevated process is invisible to
-the normal (non-elevated) Explorer.
+A drive letter created by an elevated process is invisible to the normal (non-elevated)
+Explorer. Since Explorer starts the host, it runs unelevated even when `mount` is run
+from an elevated terminal, so the letter should be visible either way (not tested yet).
 
 ## Code layout and the Mac version
 
@@ -110,8 +132,13 @@ src/store.rs   Store trait: what the drive needs from the device. DeviceStore im
                over the link; MemStore (tests) in memory.
 src/vfs.rs     The filesystem, independent of the OS: path mapping, listing cache, shared
                open-file state, read-handle pool, write buffering. Unit-tested.
-src/winfs.rs   Windows front end: WinFsp callbacks -> vfs::Drive; mount and unmount.
-src/main.rs    CLI.
+src/winfs.rs   Windows front end: WinFsp callbacks -> vfs::Drive.
+src/host.rs    The background host on Windows: serving the drive, and how sp404drive
+               starts it (through Explorer, reporting over a named pipe) and stops it
+               (a named event and mutex per mount point).
+src/main.rs    sp404drive.exe, the command line.
+src/bin/sp404drive-host.rs
+               sp404drive-host.exe, the windowless background process.
 ```
 
 Everything except `winfs.rs` and `link/windows.rs` builds on macOS. A Mac version needs:
