@@ -212,7 +212,6 @@ pub mod mem {
     pub struct MemStore {
         pub nodes: Mutex<BTreeMap<String, Option<Vec<u8>>>>,
         handles: Mutex<HashMap<i32, String>>,
-        next: Mutex<i32>,
         pub requests: Mutex<Vec<String>>,
     }
 
@@ -238,6 +237,12 @@ pub mod mem {
 
         fn log(&self, what: String) {
             self.requests.lock().unwrap().push(what);
+        }
+
+        /// Like the device after a couple of seconds without requests: close every open
+        /// handle, without telling anyone.
+        pub fn close_idle_handles(&self) {
+            self.handles.lock().unwrap().clear();
         }
 
         pub fn get(&self, path: &str) -> Option<Option<Vec<u8>>> {
@@ -280,14 +285,17 @@ pub mod mem {
                 Some(Some(_)) => {}
                 _ => return Err(StoreError::Refused(format!("open {path}"))),
             }
-            let mut next = self.next.lock().unwrap();
-            *next += 1;
-            self.handles.lock().unwrap().insert(*next, path.to_string());
-            Ok(*next)
+            // Like the device, hand out the lowest free number.
+            let mut handles = self.handles.lock().unwrap();
+            let handle = (1..).find(|h| !handles.contains_key(h)).unwrap();
+            handles.insert(handle, path.to_string());
+            Ok(handle)
         }
 
         fn read_at(&self, handle: i32, offset: u64, len: usize) -> StoreResult<Vec<u8>> {
-            let path = self.handles.lock().unwrap().get(&handle).cloned().unwrap();
+            let Some(path) = self.handles.lock().unwrap().get(&handle).cloned() else {
+                return Err(StoreError::Refused("read".into()));
+            };
             let nodes = self.nodes.lock().unwrap();
             let data = nodes.get(&path).cloned().flatten().unwrap_or_default();
             let start = (offset as usize).min(data.len());

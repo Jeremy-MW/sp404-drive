@@ -582,10 +582,15 @@ impl Drive {
     // ---- reading -----------------------------------------------------------------------
 
     /// Run `f` with a device read handle for `file`, opening one if needed.
+    ///
+    /// The device closes every open handle after a couple of seconds without requests,
+    /// without saying so, and hands the numbers out again (issue #1). So a pooled handle
+    /// may be dead: a refusal through one means reopen and try once more, and a number the
+    /// device hands out again retires whatever pooled entry still held it.
     fn with_handle<T>(
         &self,
         file: &OpenFile,
-        f: impl FnOnce(i32) -> Result<T, StoreError>,
+        f: impl Fn(i32) -> Result<T, StoreError>,
     ) -> FsResult<T> {
         self.online()?;
         // The pool stays locked for the read, so a handle is never evicted mid-read. The
@@ -595,34 +600,55 @@ impl Drive {
         let tick = pool.tick;
         let id = file.inner.id;
         let path = file.path().device_path();
-        let handle = match pool.handles.iter_mut().find(|h| h.file_id == id) {
-            Some(h) => {
-                h.last_used = tick;
-                h.handle
-            }
-            None => {
-                if pool.handles.len() >= MAX_HANDLES
-                    && let Some(oldest) = pool
-                        .handles
-                        .iter()
-                        .enumerate()
-                        .min_by_key(|(_, h)| h.last_used)
-                        .map(|(i, _)| i)
-                {
-                    let old = pool.handles.swap_remove(oldest);
-                    self.store.close(old.handle);
+        if let Some(h) = pool.handles.iter_mut().find(|h| h.file_id == id) {
+            h.last_used = tick;
+            let handle = h.handle;
+            match f(handle) {
+                Err(StoreError::Refused(what)) => {
+                    log::debug!("{path}: handle {handle} refused {what}, reopening");
+                    pool.handles.retain(|h| h.file_id != id);
+                    self.store.close(handle);
                 }
-                let handle = self.store.open(&path).map_err(|e| self.err(e))?;
-                pool.handles.push(PooledHandle {
-                    file_id: id,
-                    path: path.to_lowercase(),
-                    handle,
-                    last_used: tick,
-                });
-                handle
+                result => return self.handle_result(&mut pool, id, handle, result),
             }
-        };
+        }
+        if pool.handles.len() >= MAX_HANDLES
+            && let Some(oldest) = pool
+                .handles
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, h)| h.last_used)
+                .map(|(i, _)| i)
+        {
+            let old = pool.handles.swap_remove(oldest);
+            self.store.close(old.handle);
+        }
+        let handle = self.store.open(&path).map_err(|e| self.err(e))?;
+        // The device only reuses a number it has closed, so an entry holding it is dead.
+        // Don't close it: the number now belongs to this file.
+        pool.handles.retain(|h| {
+            if h.handle == handle {
+                log::debug!("handle {handle} for {} was closed by the device", h.path);
+            }
+            h.handle != handle
+        });
+        pool.handles.push(PooledHandle {
+            file_id: id,
+            path: path.to_lowercase(),
+            handle,
+            last_used: tick,
+        });
         let result = f(handle);
+        self.handle_result(&mut pool, id, handle, result)
+    }
+
+    fn handle_result<T>(
+        &self,
+        pool: &mut HandlePool,
+        id: u64,
+        handle: i32,
+        result: Result<T, StoreError>,
+    ) -> FsResult<T> {
         if result.is_err() {
             // Don't reuse a handle that just failed.
             pool.handles.retain(|h| h.file_id != id);
@@ -1090,6 +1116,36 @@ mod tests {
         assert_eq!(d.read(&f, 8, &mut buf).unwrap(), 2);
         assert_eq!(d.read(&f, 10, &mut buf).unwrap(), 0);
         d.release(f);
+    }
+
+    #[test]
+    fn survives_the_device_closing_idle_handles() {
+        // The device closes every open handle after a couple of seconds without requests,
+        // then hands the same numbers to the next files opened (issue #1).
+        let s = Arc::new(MemStore::new(&[
+            ("SD:A.BIN", Some(b"aaaa")),
+            ("SD:B.BIN", Some(b"bbbb")),
+            ("SD:C.BIN", Some(b"cccc")),
+        ]));
+        let d = drive(&s);
+        let (a, b) = (
+            d.open(&p("/SD-Card/A.BIN")).unwrap(),
+            d.open(&p("/SD-Card/B.BIN")).unwrap(),
+        );
+        let mut buf = [0u8; 4];
+        d.read(&a, 0, &mut buf).unwrap();
+        d.read(&b, 0, &mut buf).unwrap();
+        s.close_idle_handles();
+        // C gets A's old number.
+        let c = d.open(&p("/SD-Card/C.BIN")).unwrap();
+        d.read(&c, 0, &mut buf).unwrap();
+        assert_eq!(&buf, b"cccc");
+        // B's number is still free: the device refuses it, and the drive reopens.
+        d.read(&b, 0, &mut buf).unwrap();
+        assert_eq!(&buf, b"bbbb");
+        // A's number now belongs to C.
+        d.read(&a, 0, &mut buf).unwrap();
+        assert_eq!(&buf, b"aaaa");
     }
 
     #[test]

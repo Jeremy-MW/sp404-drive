@@ -118,6 +118,11 @@ Options:
 - **Speed.** Everything goes over the device's serial link. Reads and writes run at about
   3.8 MB/s. A folder listing needs one request per file to learn its size; a full `SMPL`
   folder (150 samples) takes about 0.3 seconds to list. Listings are cached for 5 seconds.
+- **Open files after a pause.** The unit closes every open file once nothing has been
+  asked of it for about 2 seconds, without saying so, and gives the same handle numbers to
+  the next files opened. The drive keeps up to 8 files open between reads, so after a pause
+  it reopens them as needed, at the cost of a few milliseconds per file. (Before this was
+  handled, reads could return another file's contents: issue #1.)
 - **Writes are uploaded when the file is closed.** The device's only dependable write is
   "create or replace a whole file", so a file being written is held in memory and
   uploaded when the program closes it. The same happens on unmount. If the upload fails,
