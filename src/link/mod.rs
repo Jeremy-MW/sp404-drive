@@ -12,11 +12,19 @@
 //! unplugged. Message framing and the file API's encoding come from SparkyMK2's sans-IO
 //! `sp404-proto` crate.
 //!
-//! The OS-specific part is a [`Port`]: Windows overlapped I/O in `windows.rs`. A macOS
-//! port is a blocking `read(2)` on the `/dev/cu.*` file descriptor.
+//! The OS-specific part is a [`Port`]: Windows overlapped I/O in `windows.rs`, and on
+//! macOS a `/dev/cu.*` port that waits in `select(2)` in `macos.rs`. Each provides
+//! `SerialPort::open` and `find_ports`, re-exported here.
 
+#[cfg(target_os = "macos")]
+pub mod macos;
 #[cfg(windows)]
 pub mod windows;
+
+#[cfg(target_os = "macos")]
+pub use macos::{PortInfo, SerialPort, find_ports};
+#[cfg(windows)]
+pub use windows::{PortInfo, SerialPort, find_ports};
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};

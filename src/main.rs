@@ -143,11 +143,20 @@ mod platform {
     }
 }
 
-// A macOS front end (FUSE) and serial port plug in here; see the README.
+// The macOS front end (FUSE) plugs in here; see the README. `ports` works already.
 #[cfg(not(windows))]
 mod platform {
     use anyhow::bail;
 
+    #[cfg(target_os = "macos")]
+    pub fn list_ports() -> anyhow::Result<Vec<String>> {
+        Ok(sp404_drive::link::find_ports()?
+            .into_iter()
+            .map(|p| format!("{}  {}", p.name, p.instance_id))
+            .collect())
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub fn list_ports() -> anyhow::Result<Vec<String>> {
         bail!("not implemented on this platform yet")
     }

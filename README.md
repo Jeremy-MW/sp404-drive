@@ -179,7 +179,8 @@ from an elevated terminal, so the letter should be visible either way (not teste
 
 ```
 src/link/      The serial link: request/reply logic over a Port (mod.rs, platform-neutral,
-               on sp404-proto), and the Windows port with overlapped I/O (windows.rs).
+               on sp404-proto), the Windows port with overlapped I/O (windows.rs), and
+               the macOS port, waiting in select(2) (macos.rs).
 src/store.rs   Store trait: what the drive needs from the device. DeviceStore implements it
                over the link; MemStore (tests) in memory.
 src/vfs.rs     The filesystem, independent of the OS: path mapping, listing cache, shared
@@ -193,19 +194,29 @@ src/bin/sp404drive-host.rs
                sp404drive-host.exe, the windowless background process.
 ```
 
-Everything except `winfs.rs` and `link/windows.rs` builds on macOS. A Mac version needs:
+On macOS the serial link works: `sp404drive ports` finds the unit, and
+`cargo run --example link_check` lists both volumes and reads a file over it (tested on
+2026-11-05, macOS 26 on Apple Silicon). The unit appears as `/dev/cu.usbmodem*` through
+Apple's own USB serial driver; no Roland driver is needed. `link/macos.rs` opens it raw at
+921600 baud with DTR and RTS asserted and claims it exclusively (`TIOCEXCL`). The reader
+waits in `select(2)` on the port and a wake-up pipe, with no timeout (`poll(2)` doesn't
+support device files on macOS); unplugging the unit ends that wait at once, as on Windows.
+The port is found by USB id (0582:02E7) through the `serialport` crate's port listing; its
+own port code isn't used.
+
+Still to do for a Mac version:
 
 1. a `src/fuse.rs` that implements `fuser::Filesystem` by calling the same `vfs::Drive`
    methods `winfs.rs` uses (`lookup`, `list`, `open`, `create`, `read`, `write`,
    `set_size`, `flush`, `check_delete`/`delete`, `rename`, `release`, `space`). FUSE works
-   with inode numbers, so that file also keeps an inode-to-`VPath` table;
+   with inode numbers, so that file also keeps an inode-to-`VPath` table. FUSE deletes and
+   renames by name, without an open file, so those open the file first (or `vfs` gains
+   path-based versions);
 2. `serve`, `listen_for_unmount` and `unmount` in `main.rs` for macOS. Unmounting is
    `umount /Volumes/SP-404MKII` or Finder's Eject, and the FUSE session then ends by
    itself;
-3. a `link/macos.rs` implementing `Port` for `/dev/cu.usbmodem*`: a blocking `read(2)`
-   on the descriptor, which fails when the device is unplugged, plus `write(2)`;
-   `cancel_read` can wake the reader through a self-pipe and `poll(2)` with no timeout.
-   Port discovery goes through IOKit (USB 0582:02E7);
+3. keeping Finder's `._*` and `.DS_Store` files off the unit (`noappledouble`,
+   `noapplexattr`), and checking that Spotlight and Quick Look don't read whole files;
 4. [macFUSE](https://osxfuse.github.io) or [FUSE-T](https://www.fuse-t.org) installed on
    the Mac. FUSE-T needs no kernel extension.
 

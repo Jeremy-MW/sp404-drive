@@ -18,8 +18,7 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use sp404_drive::link::windows::{SerialPort, find_ports};
-use sp404_drive::link::{Link, OPEN_READ_ONLY, Port};
+use sp404_drive::link::{Link, OPEN_READ_ONLY, Port, SerialPort, find_ports};
 use sp404_proto::{Channel, Message, control};
 
 const INTERNAL: &str = "FCTRY/FACTORY.SVD";
