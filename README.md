@@ -192,14 +192,16 @@ src/host.rs    The background host on Windows: serving the drive, and how sp404d
 src/items.rs   Numbered items over vfs::Drive, for FSKit: item numbers, open modes, the
                upload when the last writer closes, and Mac housekeeping files kept in
                memory. Unit-tested.
-src/main.rs    sp404drive.exe, the command line.
+src/main.rs    sp404drive(.exe), the command line; src/mac_cli.rs is its macOS part
+               (mount and unmount through mount -F and umount).
 src/bin/sp404drive-host.rs
                sp404drive-host.exe, the windowless background process.
 ffi/           The core as a static library with a C interface (crate sp404-ffi):
                src/lib.rs, include/sp404.h, and a module map so Swift can import it.
 macos/         The Mac app and its FSKit extension (Swift), as an XcodeGen project:
                Extension/FileSystem.swift (loading, options), Volume.swift (every FSKit
-               call -> sp404.h), Item.swift; build-rust.sh builds ffi/ for Xcode.
+               call -> sp404.h), Item.swift; build-rust.sh builds ffi/ and the
+               sp404drive command for Xcode.
 examples/      Checks run against the unit with the drive unmounted: link_check (the
                link), idle_handles (issue #1), list_tree (what is really in a folder).
 ```
@@ -248,16 +250,75 @@ The extension target's first build phase runs `macos/build-rust.sh`, which runs
 `cargo build -p sp404-ffi --target aarch64-apple-darwin` (with `--release` for the Release
 configuration) and links `target/aarch64-apple-darwin/<profile>/libsp404_ffi.a` with IOKit,
 CoreFoundation and libiconv. It finds cargo in `/opt/homebrew/opt/rustup/bin` or
-`~/.cargo/bin`. The phase runs on every build (cargo itself skips work that's up to date)
+`~/.cargo/bin`. The app target's last build phase runs `build-rust.sh cli`, which builds
+the `sp404drive` command, copies it into the app's `Contents/MacOS` and signs it with the
+app's identity and the hardened runtime (with a secure timestamp when archiving); Xcode
+signs the app after that, so the app's signature covers it. The phases run on every build (cargo itself skips work that's up to date)
 and outside Xcode's script sandbox, since cargo reads `~/.cargo` and writes `target/`. For
 now the app is **arm64 only**; an Intel or universal build (a second cargo target and
 `lipo`) is left for later.
 
 ### The Mac drive
 
-The extension now serves the real drive: the root holds `Internal` and `SD-Card`, as on
-Windows. Install `SP-404 Drive.app` in `/Applications`, open it once, switch the extension
-on in System Settings (see above), then:
+The extension serves the real drive: the root holds `Internal` and `SD-Card`, as on
+Windows. Install `SP-404 Drive.app` in `/Applications`, open it once, and switch the
+extension on in System Settings (see above).
+
+The app carries the `sp404drive` command in `Contents/MacOS`. To type just `sp404drive`,
+link it into `/usr/local/bin` (on the default `PATH`) once:
+
+```
+sudo mkdir -p /usr/local/bin
+sudo ln -sf "/Applications/SP-404 Drive.app/Contents/MacOS/sp404drive" /usr/local/bin/sp404drive
+```
+
+The link follows the app when it's updated in place. Then, with Roland's SP-404MKII app
+closed:
+
+```
+sp404drive ports                 # list connected SP-404MKII units
+sp404drive mount                 # mount on ~/SP-404MKII (or: sp404drive mount <folder>)
+sp404drive mount --read-only     # refuse all changes
+sp404drive unmount               # unmount, and wait until it's gone and the port is free
+```
+
+The options are the same as on Windows (`--port`, `--read-only`, `--cache-secs`); `-v`
+does nothing on the Mac (the log is the unified log, below). `--port` takes
+`/dev/cu.usbmodem1101` or `cu.usbmodem1101` and must be an SP-404MKII's port.
+
+How it works:
+
+- **No background process of its own.** The drive runs in the extension, which macOS
+  starts in a process of its own for each mount, so `mount` just runs
+  `mount -F -t sp404 <url> <folder>` and returns once it's mounted (0.5 s). Closing the
+  terminal leaves the drive mounted.
+- **Where it mounts.** `~/SP-404MKII` by default, created by `mount` and removed by
+  `unmount`. `/Volumes` isn't possible for an ordinary user: it belongs to root, `mount -F`
+  doesn't create the folder ("invalid file system"), and macOS's network-mount route
+  (NetFS, as Finder's "Connect to Server" uses) refuses the `sp404` scheme ("Operation not
+  supported"). Another folder must be empty (mounting would hide its contents) and is
+  created if missing. The volume is listed as a browsable volume
+  (`FileManager.mountedVolumeURLs` with hidden volumes skipped), so it should appear in
+  Finder's sidebar under Locations; Finder itself is not tested yet.
+- **Settings travel in the URL**, because the extension opens the drive in `loadResource`,
+  before `-o` options arrive: `sp404://unit?port=/dev/cu.usbmodem1101&cache-secs=5`, plus
+  `&read-only` and `-r` for a read-only mount. The extension logs what it received, and
+  refuses an unknown setting or a bad value ("Invalid argument"). `mount` shows the URL as
+  the volume's source, which is how `sp404drive` finds its mounts.
+- **Unmounting.** `sp404drive unmount` runs `umount` and waits for it, at most 60 s.
+  `umount` returns once the extension has saved everything, waited out the unit's session
+  (up to 3 s) and closed the port. Finder's Eject and `diskutil unmount` take the same path
+  (`diskutil` tested; Finder not yet); they leave the empty `~/SP-404MKII` folder behind,
+  and the next `mount` uses it. With no folder given, `unmount` takes whichever
+  SP-404MKII volume is mounted.
+- **Errors, in words:** a second mount of the same unit ("already mounted at ..."); no unit
+  connected ("no SP-404MKII found", checked before mounting); the port held by another
+  program ("in use by another program, probably Roland's SP-404MKII app"); macOS not
+  starting the extension (it isn't switched on, or the app isn't installed: the message
+  says where to switch it on); macOS older than 26; a folder that isn't empty; `unmount`
+  while a program has a file open or a terminal is in a folder on the drive ("in use").
+
+`mount -F` can still be used by hand:
 
 ```
 mount -F -t sp404 -r sp404://unit ~/SP404      # read-only (or: -o rdonly)
@@ -267,8 +328,9 @@ umount ~/SP404
 
 How the volume works:
 
-- **Opening and closing the drive.** `loadResource` opens the drive (finding the unit by
-  USB id). A held port (Roland's app) fails the mount with "Resource busy"; a missing unit
+- **Opening and closing the drive.** `loadResource` opens the drive, on the port named in
+  the URL or the first unit found by USB id. Each mount gets a new extension process; a
+  second load in the same process while the drive is open is refused without touching it. A held port (Roland's app) fails the mount with "Resource busy"; a missing unit
   should fail it with "Operation not supported by device" (not tested). Opening it here rather than in `activate`
   matters: after a failed `activate`, FSKit keeps the resource loaded and refuses every
   later mount until the extension process ends; after a failed load it doesn't.
@@ -365,17 +427,41 @@ unmounting and mounting again, against the source files:
 | `fsync`, `F_FULLFSYNC`, `sync` on a file being written | nothing reaches the volume; the file is uploaded at close |
 | Issue #1: two files open, 64 KB reads alternating with 3 s pauses, so the unit closes its handles between reads (`F_NOCACHE` and fresh offsets after a fresh mount, to bypass the page cache) | 70 reads in six runs, all correct; in the two runs whose timings were printed, every read took about 20 ms, so it reached the unit |
 
-Not tested yet: Finder, Spotlight and Quick Look, unplugging while mounted (and so a real
-upload failure), mounting with no unit attached, non-ASCII names on the unit, a Developer
-ID export of this version.
+Mounting and unmounting with `sp404drive`, tested on 2026-11-05 on the unit (Release
+build, the command run from inside the installed app through a symlink, and from
+`target/release`). The one write was a 300 KB file in a test folder on the card, deleted
+afterwards:
+
+| Test | Result |
+|---|---|
+| `sp404drive mount --read-only --cache-secs 9` | 0.48-0.55 s; `~/SP-404MKII` created; the extension logged port `/dev/cu.usbmodem1101`, cache 9 s, read-only; `touch` refused ("Read-only file system") |
+| `sp404drive mount` (read-write), `mkdir`, `cp` of 300 KB | mounted without `read-only`; the file was identical after `diskutil unmount` and a new mount |
+| `sp404drive mount` again; `mount <other folder>`; `mount --port cu.usbmodem1101 <other folder>` | all refused: "already mounted at ~/SP-404MKII" |
+| `mount -F` by hand while mounted (the URL alone, and with other settings) | refused by the port's exclusive claim: "Resource busy"; the first mount carried on |
+| `sp404drive mount` while another program holds the port | "in use by another program, probably Roland's SP-404MKII app"; the folder it created is removed again |
+| `sp404drive unmount` just after use | 3.03-3.05 s (waiting out the session); `lsof` shows the port free as it returns; `~/SP-404MKII` removed |
+| `diskutil unmount ~/SP-404MKII` just after use, and when idle | 3.02 s and 0.14 s; port free; the empty folder stays, and the next `mount` uses it |
+| `sp404drive unmount` while a process's working directory is on the drive | "in use: a program has a file open there, or a terminal is in a folder inside it"; still mounted |
+| `sp404drive unmount` with nothing mounted, or on a folder that isn't the drive | "the SP-404MKII isn't mounted" |
+| `--port /dev/cu.nosuch`; `--port cu.Bluetooth-Incoming-Port` | "no serial port"; "isn't an SP-404MKII" (nothing opened) |
+| A folder that isn't empty, a file instead of a folder, `--cache-secs` too large | refused before mounting |
+| `mount -F` by hand with `?bogus=1`, or `?port=` not a `/dev/` path | "Invalid argument" (the log says which); the next mount works |
+
+Not tested yet: Finder (its sidebar, Eject, copies), Spotlight and Quick Look, unplugging
+while mounted (and so a real upload failure), mounting with no unit attached (the
+extension's "not supported by device" path; `sp404drive` checks for the unit first), the
+message when the extension is switched off (`mount -F` of an unknown file system type
+prints only "Unable to invoke task", which `sp404drive` reads as "not switched on"; the
+switched-off case should look the same), macOS before 26, non-ASCII names on the unit, a
+Developer ID export and notarisation of this version (with the command inside the app).
 
 Still to do for the Mac version:
 
-1. testing Finder copies and moves, and Spotlight and Quick Look (they shouldn't read whole
-   files);
-2. mounting and unmounting from `sp404drive` (`mount -F`, `umount`) or from the app;
-3. unplugging while mounted, and what FSKit does then;
-4. an Intel or universal build, and a notarised release.
+1. testing Finder copies and moves, Eject and the sidebar, and Spotlight and Quick Look
+   (they shouldn't read whole files);
+2. unplugging while mounted, and what FSKit does then;
+3. an Intel or universal build, and a notarised release;
+4. perhaps mounting from the app itself (a menu bar item), and at login or plug-in.
 
 ## Contributing
 

@@ -2,8 +2,10 @@ use clap::{Parser, Subcommand};
 
 #[cfg(windows)]
 const DEFAULT_MOUNT: &str = "S:";
+// /Volumes belongs to root, and FSKit doesn't create mount points: a folder in the home
+// folder, created by `mount` and removed by `unmount`.
 #[cfg(not(windows))]
-const DEFAULT_MOUNT: &str = "/Volumes/SP-404MKII";
+const DEFAULT_MOUNT: &str = "~/SP-404MKII";
 
 #[derive(Parser)]
 #[command(
@@ -24,7 +26,8 @@ enum Command {
     /// Mount the SP-404MKII in the background. It stays mounted until `sp404drive unmount`
     /// or until the device is unplugged or switched off.
     Mount {
-        /// Drive letter (`S:`) or an empty folder to mount on.
+        /// Drive letter (`S:`) or an empty folder to mount on. On macOS, a folder
+        /// (created if missing).
         #[arg(default_value = DEFAULT_MOUNT)]
         mount_point: String,
         /// Serial port of the device (default: the first SP-404MKII found).
@@ -37,7 +40,8 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         cache_secs: u64,
     },
-    /// Unmount a drive mounted with `sp404drive mount`, and wait until it is gone.
+    /// Unmount a drive mounted with `sp404drive mount`, and wait until it is gone. On
+    /// macOS, with no folder given, whichever SP-404MKII is mounted.
     Unmount {
         #[arg(default_value = DEFAULT_MOUNT)]
         mount_point: String,
@@ -143,20 +147,15 @@ mod platform {
     }
 }
 
-// The macOS front end (FUSE) plugs in here; see the README. `ports` works already.
-#[cfg(not(windows))]
+// macOS: the drive is the FSKit extension in SP-404 Drive.app (see the README).
+#[cfg(target_os = "macos")]
+#[path = "mac_cli.rs"]
+mod platform;
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod platform {
     use anyhow::bail;
 
-    #[cfg(target_os = "macos")]
-    pub fn list_ports() -> anyhow::Result<Vec<String>> {
-        Ok(sp404_drive::link::find_ports()?
-            .into_iter()
-            .map(|p| format!("{}  {}", p.name, p.instance_id))
-            .collect())
-    }
-
-    #[cfg(not(target_os = "macos"))]
     pub fn list_ports() -> anyhow::Result<Vec<String>> {
         bail!("not implemented on this platform yet")
     }

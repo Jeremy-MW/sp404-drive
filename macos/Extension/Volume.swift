@@ -54,6 +54,8 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
     private(set) var time = timespec()
     let root: Item
     private weak var fileSystem: SP404FileSystem?
+    /// From the resource's URL (see `MountSettings`).
+    let settings: MountSettings
 
     /// The core's drive; nil until opened and once closed. Calls hold `driveLock` for
     /// reading while they use it, so closing (which holds it for writing) waits for them.
@@ -69,8 +71,9 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
 
     var requestedMountOptions: FSVolume.MountOptions = []
 
-    init(fileSystem: SP404FileSystem, readOnly: Bool) {
+    init(fileSystem: SP404FileSystem, settings: MountSettings, readOnly: Bool) {
         self.fileSystem = fileSystem
+        self.settings = settings
         self.readOnly = readOnly
         driveLock = .allocate(capacity: 1)
         pthread_rwlock_init(driveLock, nil)
@@ -97,23 +100,22 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
         return body(d)
     }
 
-    /// Connect to the unit (the first SP-404MKII found) and open the drive.
+    /// Connect to the unit (the port in the settings, or the first SP-404MKII found) and
+    /// open the drive.
     func openDrive(readOnly: Bool) -> (any Error)? {
         let watch = UnitWatch()
         watch.fileSystem = fileSystem
         let context = Unmanaged.passRetained(watch)
-        var err = [CChar](repeating: 0, count: 512)
-        guard let d = sp_drive_open(nil, readOnly, 5, unitGone, context.toOpaque(), &err, err.count) else {
+        let errLen = 512
+        var err = [CChar](repeating: 0, count: errLen)
+        let opened = withOptionalCString(settings.port) { port in
+            sp_drive_open(port, readOnly, settings.cacheSecs, unitGone, context.toOpaque(), &err, errLen)
+        }
+        guard let d = opened else {
             context.release()
             let reason = string(err)
             log.error("could not open the drive: \(reason, privacy: .public)")
-            var code = EIO
-            if reason.contains("no SP-404MKII found") {
-                code = ENODEV
-            } else if reason.hasPrefix("opening") {
-                code = EBUSY  // the port is held, e.g. by Roland's app
-            }
-            return posix(code)
+            return posix(openErrorCode(reason))
         }
         pthread_rwlock_wrlock(driveLock)
         let old = drive
@@ -143,7 +145,7 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
         pthread_rwlock_unlock(driveLock)
     }
 
-    private var isOpen: Bool {
+    var isOpen: Bool {
         pthread_rwlock_rdlock(driveLock)
         defer { pthread_rwlock_unlock(driveLock) }
         return drive != nil

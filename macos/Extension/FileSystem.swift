@@ -1,8 +1,13 @@
 // The SP-404MKII as an FSKit file system: one volume per mount, holding the drive's core
-// (ffi/, through sp404.h). Mount it with:
+// (ffi/, through sp404.h). `sp404drive mount` and `unmount` run these:
 //
 //     mount -F -t sp404 sp404://unit <folder>         (add -r for read-only)
 //     umount <folder>
+//
+// Settings go in the URL's query, since the volume opens the drive in loadResource,
+// before the mount's -o options arrive (in activate):
+//
+//     sp404://unit?port=/dev/cu.usbmodem1101&cache-secs=5&read-only
 //
 // Log lines (this extension's and the core's) go to the unified log, subsystem
 // com.polecatplugins.sp404drive:
@@ -54,6 +59,74 @@ func wantsReadOnly(_ options: [String]) -> Bool {
     return false
 }
 
+/// What the resource's URL asks for: `port` (default: the first SP-404MKII found),
+/// `cache-secs` (how long a folder listing is reused, default 5) and `read-only`
+/// (present, or `=1`/`=true`). An unknown key or a bad value fails the mount with EINVAL.
+struct MountSettings: Sendable {
+    var port: String?
+    var cacheSecs: UInt32 = 5
+    var readOnly = false
+
+    init(url: URL?) throws {
+        guard let url else { return }
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw MountSettingsError(text: "unreadable URL \(url.absoluteString)")
+        }
+        for item in parts.queryItems ?? [] {
+            let value = item.value
+            switch item.name {
+            case "port":
+                guard let value, value.hasPrefix("/dev/") else {
+                    throw MountSettingsError(text: "port must be a /dev/ path, not \(value ?? "nothing")")
+                }
+                port = value
+            case "cache-secs":
+                guard let value, let secs = UInt32(value) else {
+                    throw MountSettingsError(text: "cache-secs must be a number of seconds, not \(value ?? "nothing")")
+                }
+                cacheSecs = secs
+            case "read-only":
+                switch value {
+                case nil, "", "1", "true": readOnly = true
+                case "0", "false": readOnly = false
+                default: throw MountSettingsError(text: "read-only must be 1 or 0, not \(value!)")
+                }
+            default:
+                throw MountSettingsError(text: "unknown setting \(item.name) in \(url.absoluteString)")
+            }
+        }
+    }
+}
+
+struct MountSettingsError: Error {
+    let text: String
+}
+
+/// The POSIX error for the core's reason for not opening the drive, as `mount` will print
+/// it: "Operation not supported by device" for no unit (or no such port), "Resource
+/// busy" when another program holds the port.
+func openErrorCode(_ reason: String) -> Int32 {
+    if reason.contains("no SP-404MKII found") {
+        return ENODEV
+    }
+    if reason.hasPrefix("opening") {
+        // "opening /dev/...: Resource busy (os error 16) (is Roland's ...)"
+        if let range = reason.range(of: "(os error "),
+            let code = Int32(reason[range.upperBound...].prefix(while: { $0.isNumber }))
+        {
+            return code == ENOENT ? ENODEV : code
+        }
+        return EBUSY
+    }
+    return EIO
+}
+
+/// Calls `body` with `string` as a C string, or with NULL.
+func withOptionalCString<R>(_ string: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
+    guard let string else { return body(nil) }
+    return string.withCString { body($0) }
+}
+
 /// Passed to the core as the context of its "unit gone" callback. Retained until the
 /// drive is closed, after which the core can't call it any more.
 final class UnitWatch: @unchecked Sendable {
@@ -90,12 +163,33 @@ final class SP404FileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @un
         replyHandler: @escaping (FSVolume?, (any Error)?) -> Void
     ) {
         let args = options.taskOptions
-        log.notice("loadResource: options \(args, privacy: .public)")
+        let url = (resource as? FSGenericURLResource)?.url
+        log.notice(
+            "loadResource: \(url?.absoluteString ?? "no URL", privacy: .public), options \(args, privacy: .public)")
         sp_set_logger(coreLogLine, 3)
+        // One drive per extension process. A second load while a volume holds the drive
+        // must not touch it (or the container's state). After an unmount the drive is
+        // closed, and a new load replaces the volume.
+        if lock.withLock({ self.volume?.isOpen ?? false }) {
+            log.error("loadResource: the SP-404MKII is already loaded")
+            return replyHandler(nil, fs_errorForPOSIXError(EBUSY))
+        }
+        let settings: MountSettings
+        do {
+            settings = try MountSettings(url: url)
+        } catch {
+            let text = (error as? MountSettingsError)?.text ?? "\(error)"
+            log.error("loadResource: \(text, privacy: .public)")
+            return replyHandler(nil, fs_errorForPOSIXError(EINVAL))
+        }
+        log.notice(
+            "settings: port \(settings.port ?? "first found", privacy: .public), cache \(settings.cacheSecs) s, read-only \(settings.readOnly)"
+        )
         // The drive is opened here, so a missing unit or a busy port fails the load: FSKit
         // cleans up after a failed load, but after a failed activate it keeps the
         // resource loaded and refuses the next mount ("Resource busy").
-        let volume = Volume(fileSystem: self, readOnly: wantsReadOnly(args))
+        let volume = Volume(
+            fileSystem: self, settings: settings, readOnly: settings.readOnly || wantsReadOnly(args))
         if let error = volume.openDrive(readOnly: volume.readOnly) {
             containerStatus = .notReady(status: error)
             return replyHandler(nil, error)

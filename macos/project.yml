@@ -24,10 +24,34 @@ targets:
         CFBundleDisplayName: SP-404 Drive
         LSUIElement: true
         LSMinimumSystemVersion: "26.0"
+    # The sp404drive command goes in Contents/MacOS beside the app's own executable,
+    # signed like it (hardened runtime; a timestamp when archiving). Xcode signs the app
+    # after its build phases, so the app's signature covers it.
+    postBuildScripts:
+      - name: Add the sp404drive command
+        script: |
+          set -eu
+          "$PROJECT_DIR/build-rust.sh" cli
+          dst="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/sp404drive"
+          ditto "$PROJECT_DIR/../target/aarch64-apple-darwin/$SP404_CARGO_PROFILE/sp404drive" "$dst"
+          timestamp=--timestamp=none
+          if [ "$ACTION" = install ]; then timestamp=--timestamp; fi
+          codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" --options runtime \
+            "$timestamp" --identifier com.polecatplugins.sp404drive.cli "$dst"
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/sp404drive
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.polecatplugins.sp404drive
         PRODUCT_NAME: SP-404 Drive
+        # The script runs cargo, which reads ~/.cargo and writes ../target.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+      configs:
+        Debug:
+          SP404_CARGO_PROFILE: debug
+        Release:
+          SP404_CARGO_PROFILE: release
     dependencies:
       - target: SP404FS
         embed: true
