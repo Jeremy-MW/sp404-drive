@@ -1,7 +1,8 @@
 # sp404-drive
 
-Mount a Roland SP-404MKII as a drive. Plug the unit in over USB and it appears as a drive
-letter with two folders:
+Mount a Roland SP-404MKII as a drive, on Windows or macOS. Plug the unit in over USB and
+it appears as a drive letter on Windows (a folder on a Mac, `~/SP-404MKII`) with two
+folders:
 
 ```
 S:\
@@ -9,7 +10,9 @@ S:\
   SD-Card\     the card in its slot: IMPORT, EXPORT, BKUP, ...
 ```
 
-Explorer, DAWs and the command line can browse, copy, create, rename and delete files on it.
+Explorer or Finder, DAWs and the command line can browse, copy, create, rename and delete
+files on it. The Windows version is described first; the Mac version, an FSKit file system
+in a notarised app with nothing else to install, is under "macOS".
 
 > Not affiliated with or endorsed by Roland Corporation. "SP-404MKII" and "Roland" are
 > trademarks of Roland Corporation.
@@ -28,7 +31,7 @@ uses no CPU and none of its threads wake up.
   works (`winget install LLVM.LLVM`). Otherwise, point `LIBCLANG_PATH` at a folder that
   contains `libclang.dll`. The Doxygen install's `bin` folder has one.
 
-## Build
+## Build (Windows)
 
 ```
 cargo build --release
@@ -41,12 +44,12 @@ This builds two programs in `target\release\`, which belong in the same folder:
   GUI program that creates no window, so it never has a window or a console, whoever
   starts it.
 
-## Install
+## Install (Windows)
 
 Copy both into `%LOCALAPPDATA%\Programs\sp404drive\` and add that folder to your user
 PATH. To update, unmount, then copy the new pair over the old.
 
-## Use
+## Use (Windows)
 
 Quit Roland's SP-404MKII app first. Only one program can use the device's link at a time.
 
@@ -175,105 +178,55 @@ A drive letter created by an elevated process is invisible to the normal (non-el
 Explorer. Since Explorer starts the host, it runs unelevated even when `mount` is run
 from an elevated terminal, so the letter should be visible either way (not tested yet).
 
-## Code layout and the Mac version
+## macOS
 
-```
-src/link/      The serial link: request/reply logic over a Port (mod.rs, platform-neutral,
-               on sp404-proto), the Windows port with overlapped I/O (windows.rs), and
-               the macOS port, waiting in select(2) (macos.rs).
-src/store.rs   Store trait: what the drive needs from the device. DeviceStore implements it
-               over the link; MemStore (tests) in memory.
-src/vfs.rs     The filesystem, independent of the OS: path mapping, listing cache, shared
-               open-file state, read-handle pool, write buffering. Unit-tested.
-src/winfs.rs   Windows front end: WinFsp callbacks -> vfs::Drive.
-src/host.rs    The background host on Windows: serving the drive, and how sp404drive
-               starts it (through Explorer, reporting over a named pipe) and stops it
-               (a named event and mutex per mount point).
-src/items.rs   Numbered items over vfs::Drive, for FSKit: item numbers, open modes, the
-               upload when the last writer closes, and Mac housekeeping files kept in
-               memory. Unit-tested.
-src/main.rs    sp404drive(.exe), the command line; src/mac_cli.rs is its macOS part
-               (mount and unmount through mount -F and umount).
-src/bin/sp404drive-host.rs
-               sp404drive-host.exe, the windowless background process.
-ffi/           The core as a static library with a C interface (crate sp404-ffi):
-               src/lib.rs, include/sp404.h, and a module map so Swift can import it.
-macos/         The Mac app and its FSKit extension (Swift), as an XcodeGen project:
-               Extension/FileSystem.swift (loading, options), Volume.swift (every FSKit
-               call -> sp404.h), Item.swift; build-rust.sh builds ffi/ and the
-               sp404drive command for Xcode.
-examples/      Checks run against the unit with the drive unmounted: link_check (the
-               link), idle_handles (issue #1), list_tree (what is really in a folder).
-```
+On a Mac the drive is an FSKit file system: Apple's own framework for file systems that
+run outside the kernel. It ships as `SP-404 Drive.app`, which carries the file-system
+extension and the `sp404drive` command. Nothing else needs installing: no macFUSE, no
+kernel extension, no change to the Mac's security settings.
 
-On macOS the serial link works: `sp404drive ports` finds the unit, and
-`cargo run --example link_check` lists both volumes and reads a file over it (tested on
-2026-11-05, macOS 26 on Apple Silicon). The unit appears as `/dev/cu.usbmodem*` through
-Apple's own USB serial driver; no Roland driver is needed. `link/macos.rs` opens it raw at
-921600 baud with DTR and RTS asserted and claims it exclusively (`TIOCEXCL`). The reader
-waits in `select(2)` on the port and a wake-up pipe, with no timeout (`poll(2)` doesn't
-support device files on macOS); unplugging the unit ends that wait at once, as on Windows.
-The port is found by USB id (0582:02E7) through the `serialport` crate's port listing; its
-own port code isn't used.
+### Requirements (macOS)
 
-The Mac version will be an FSKit file system: Apple's own framework, with no third-party
-software to install (macFUSE or FUSE-T would be a second install, and macFUSE also needs a
-system extension approved). It ships as a signed, notarised `SP-404 Drive.app` that carries
-the extension; the user switches the extension on once, in System Settings > General >
-Login Items & Extensions > Extensions, By Category > File System Extensions. It needs
-macOS 26 or later.
+- macOS 26 or later. A file system with no disk behind it (FSKit's "generic URL
+  resources") needs macOS 26.
+- A Mac with Apple silicon. The app is built for arm64 only for now; an Intel or universal
+  build is still to do.
+- No driver: the unit's serial port appears as `/dev/cu.usbmodem*` through Apple's own USB
+  serial driver.
 
-`macos/` holds the Xcode project (generated from `project.yml` with
-[XcodeGen](https://github.com/yonaskolb/XcodeGen)). The first version of its extension was
-a check: a read-only volume with one file saying whether the sandboxed extension could open
-the unit's serial port. On 2026-11-05 it showed that:
+### Install (macOS)
 
-- the FSKit entitlement (`com.apple.developer.fskit.fsmodule`) is granted in Developer ID
-  provisioning profiles;
-- a volume with no disk behind it works (`FSSupportsGenericURLResources`, URL scheme
-  `sp404`);
-- an ordinary user can mount it, without root: `mount -F -t sp404 sp404://unit <folder>`,
-  and unmount it with `umount`;
-- the sandboxed extension can open `/dev/cu.usbmodem*` (`com.apple.security.device.serial`);
-- the app exports for Developer ID, notarises, and passes Gatekeeper.
+1. Download `SP-404-Drive-<version>-macos-arm64.zip` and open it. (No release has been
+   published yet. Until then, build the app as described under "Building from source".)
+2. Move `SP-404 Drive.app` to `/Applications`.
+3. Open it once. It shows no window: opening it registers its file-system extension with
+   macOS.
+4. Switch the extension on, once: System Settings > General > Login Items & Extensions >
+   Extensions, choose **By Category**, then **File System Extensions**, and switch on
+   SP-404MKII (SP-404 Drive's extension).
+5. Optional: to type just `sp404drive`, link the command into `/usr/local/bin` (on the
+   default `PATH`) once:
 
-### Building the Mac version
+   ```
+   sudo mkdir -p /usr/local/bin
+   sudo ln -sf "/Applications/SP-404 Drive.app/Contents/MacOS/sp404drive" /usr/local/bin/sp404drive
+   ```
 
-```
-cd macos
-xcodegen generate
-xcodebuild -project SP404Drive.xcodeproj -scheme SP404Drive -configuration Release \
-  -derivedDataPath build -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
-```
+   The link follows the app when it's updated in place. Without it, use the full path:
+   `"/Applications/SP-404 Drive.app/Contents/MacOS/sp404drive"`.
 
-The extension target's first build phase runs `macos/build-rust.sh`, which runs
-`cargo build -p sp404-ffi --target aarch64-apple-darwin` (with `--release` for the Release
-configuration) and links `target/aarch64-apple-darwin/<profile>/libsp404_ffi.a` with IOKit,
-CoreFoundation and libiconv. It finds cargo in `/opt/homebrew/opt/rustup/bin` or
-`~/.cargo/bin`. The app target's last build phase runs `build-rust.sh cli`, which builds
-the `sp404drive` command, copies it into the app's `Contents/MacOS` and signs it with the
-app's identity and the hardened runtime (with a secure timestamp when archiving); Xcode
-signs the app after that, so the app's signature covers it. The phases run on every build (cargo itself skips work that's up to date)
-and outside Xcode's script sandbox, since cargo reads `~/.cargo` and writes `target/`. For
-now the app is **arm64 only**; an Intel or universal build (a second cargo target and
-`lipo`) is left for later.
+The app is signed with a Developer ID and notarised by Apple, with the ticket stapled to
+it. `spctl` accepts it as "Notarized Developer ID", also a copy unpacked from the zip and
+marked as downloaded (quarantined), and the command inside that copy runs. Opening a
+downloaded copy by double-clicking it, and switching the extension on for the first time
+on another Mac, are not tested yet.
 
-### The Mac drive
+To update: unmount, replace `SP-404 Drive.app` in `/Applications` with the new one and open
+it once. On this Mac the extension stayed switched on every time the app was replaced.
 
-The extension serves the real drive: the root holds `Internal` and `SD-Card`, as on
-Windows. Install `SP-404 Drive.app` in `/Applications`, open it once, and switch the
-extension on in System Settings (see above).
+### Use (macOS)
 
-The app carries the `sp404drive` command in `Contents/MacOS`. To type just `sp404drive`,
-link it into `/usr/local/bin` (on the default `PATH`) once:
-
-```
-sudo mkdir -p /usr/local/bin
-sudo ln -sf "/Applications/SP-404 Drive.app/Contents/MacOS/sp404drive" /usr/local/bin/sp404drive
-```
-
-The link follows the app when it's updated in place. Then, with Roland's SP-404MKII app
-closed:
+Quit Roland's SP-404MKII app first. Only one program can use the device's link at a time.
 
 ```
 sp404drive ports                 # list connected SP-404MKII units
@@ -282,24 +235,109 @@ sp404drive mount --read-only     # refuse all changes
 sp404drive unmount               # unmount, and wait until it's gone and the port is free
 ```
 
-The options are the same as on Windows (`--port`, `--read-only`, `--cache-secs`); `-v`
-does nothing on the Mac (the log is the unified log, below). `--port` takes
-`/dev/cu.usbmodem1101` or `cu.usbmodem1101` and must be an SP-404MKII's port.
+The drive appears at `~/SP-404MKII` (in Finder: Go > Home), holding `Internal` and
+`SD-Card`, as on Windows. `mount` creates the folder and `unmount` removes it. The volume
+counts as browsable, so it should also be listed in Finder's sidebar under Locations, and
+Finder's Eject should unmount it (both not tested yet; `diskutil unmount`, which takes the
+same route as Eject, is tested). An ejected volume leaves the empty folder behind, and the
+next `mount` uses it.
 
-How it works:
+The options are the same as on Windows:
+
+| Option | Meaning |
+|---|---|
+| `--port /dev/cu.usbmodem1101` | use this serial port (`cu.usbmodem1101` also works) instead of the first SP-404MKII found; it must be an SP-404MKII's port |
+| `--read-only` | refuse all changes |
+| `--cache-secs N` | reuse a folder listing for N seconds (default 5) |
+
+`-v` does nothing on the Mac: the drive logs to the unified log (see "How it behaves on
+macOS").
+
+Nothing mounts the drive automatically. To switch to Roland's app, `sp404drive unmount`
+(or eject it), use the app, quit it, then `sp404drive mount` again.
+
+**Before switching the unit off or unplugging it**, make sure nothing is still being
+written. A file is sent to the unit when the program writing it closes it, and its
+`close()` returns only once the unit has confirmed it. So a `cp` is finished when it
+returns. For certainty, unmount first: `unmount` (and Eject) return only after everything
+is saved, the unit's session is over and the port is free. Don't pull the cable while
+playing pads quickly within 3 seconds of using the drive: the unit can freeze (see "How it
+behaves" above).
+
+### How it behaves on macOS
+
+Measured on the unit, a Release build on macOS 26 on Apple silicon (the tables are under
+"Tested on the unit (macOS)").
+
+- **Speed.** Reads run at 3.1–4.0 MB/s (a 162 MB sample copied off the card at
+  3.96 MB/s), writes at 3.7–4.0 MB/s (32 MiB in 8.3–9.1 s). `ls -laR` of a card holding
+  4652 files took 12.4 s. Mounting takes 0.5–0.8 s; unmounting takes 3 s
+  just after the drive was used, waiting out the unit's session, and well under a second
+  when it has been idle.
+- **Writes are uploaded when the file is closed,** as on Windows: a file being written is
+  held in memory and sent whole when the last program writing it closes it. Unlike on
+  Windows, **a failed upload is reported to the program**: `close()` returns the error, so
+  `cp` says "Input/output error" and exits with 1 (tested by making the upload fail on
+  purpose in a test build; a real failure needs the unit to go away mid-write, not
+  tested). `fsync`, `F_FULLFSYNC` and `sync` never reach the drive (measured), so they
+  save nothing: closing the file, or unmounting, does.
+- **No `._` files.** macOS sets extended attributes on most files it copies (Finder info,
+  quarantine), and on a volume that refuses them it writes a `._` file beside each file
+  instead. The drive keeps extended attributes in memory, per file, and never sends them
+  to the unit, so `cp`, `cp -p`, `cp -Rp` and `ditto` left no `._` file on the card. The
+  attributes are lost on unmount. Finder is not tested yet.
+- **Mac housekeeping files** (`._*`, `.DS_Store`, `.Trashes`, `.fseventsd`,
+  `.Spotlight-V100`, `.TemporaryItems`, `.apdisk`, `.VolumeIcon.icns`) are never created on
+  the unit. A new file with one of these names is kept in memory instead, until it's
+  deleted or the drive is unmounted, so the program writing it carries on: copying a
+  folder that holds a `.DS_Store` or a `._` file with `cp -R`, `ditto` or `rsync -a`
+  works, and only the real files reach the card. Such a file isn't listed, since it isn't
+  on the unit (so `diff -r` against the source reports it as missing), but it can be
+  opened, read, written, renamed and deleted by name. Ones already on the card (from a
+  card reader) are ordinary files. Details under "How it works on macOS".
+- **No dates.** The unit keeps no timestamps, so every file shows the time the drive was
+  mounted. Setting times, permissions, owner or flags is accepted and ignored; only a
+  file's size can be set.
+- **Capacity.** `df` shows the internal storage's size (16 GB, shown as 15 GiB)
+  and free space, as on Windows, for `Internal` and `SD-Card` alike: the card's size and
+  free space aren't available over USB. A space check before a copy onto the card
+  therefore uses the internal storage's free space (Finder's check not tested).
+- **Names.** Lookups ignore case for ASCII letters and keep the case you type, as on
+  Windows. A name typed precomposed finds a file stored decomposed, and the other way
+  round. The unit refuses to create some names with accents (`É.txt`, for one) and accepts
+  others (`été.txt`); why is unknown. Such a refusal is "Input/output error".
+- **Moving between `Internal` and `SD-Card`** is a copy followed by a delete (`rename`
+  returns "Cross-device link", and `mv` copies instead; Finder should too, not tested).
+- **A file deleted or replaced while open** (by `rm`, or by a `rename` over it) is never
+  saved again: what the program still holding it writes stays in memory until it closes
+  it, then is thrown away.
+- **The unit's session, the freeze, and live internal storage** are as on Windows (see "How
+  it behaves" above). Use `--read-only` when you only want to look at `Internal`.
+- **Unplugging while mounted** is not tested. The drive notices at once (the serial read
+  ends), logs it and fails every request from then on, and tells FSKit the volume is no
+  longer ready; whether macOS then unmounts it by itself, and whether `sp404drive
+  unmount` still works then, is unknown.
+- **Logging.** The drive's lines go to the unified log at "notice" level or above, so
+  they're kept:
+  `/usr/bin/log show --last 10m --predicate 'subsystem == "com.polecatplugins.sp404drive"'`.
+  Every open, close, write and size change is also logged at "debug" level, which is only
+  seen live: `/usr/bin/log stream --level debug --predicate '...'`. (In zsh, plain `log`
+  is a shell builtin, hence the full path.)
+
+### How it works on macOS
+
+Mounting and unmounting:
 
 - **No background process of its own.** The drive runs in the extension, which macOS
   starts in a process of its own for each mount, so `mount` just runs
-  `mount -F -t sp404 <url> <folder>` and returns once it's mounted (0.5 s). Closing the
-  terminal leaves the drive mounted.
-- **Where it mounts.** `~/SP-404MKII` by default, created by `mount` and removed by
-  `unmount`. `/Volumes` isn't possible for an ordinary user: it belongs to root, `mount -F`
-  doesn't create the folder ("invalid file system"), and macOS's network-mount route
-  (NetFS, as Finder's "Connect to Server" uses) refuses the `sp404` scheme ("Operation not
-  supported"). Another folder must be empty (mounting would hide its contents) and is
-  created if missing. The volume is listed as a browsable volume
-  (`FileManager.mountedVolumeURLs` with hidden volumes skipped), so it should appear in
-  Finder's sidebar under Locations; Finder itself is not tested yet.
+  `mount -F -t sp404 <url> <folder>` and returns once it's mounted. Closing the terminal
+  leaves the drive mounted.
+- **Where it mounts.** `~/SP-404MKII` by default. `/Volumes` isn't possible for an
+  ordinary user: it belongs to root, `mount -F` doesn't create the folder ("invalid file
+  system"), and macOS's network-mount route (NetFS, as Finder's "Connect to Server" uses)
+  refuses the `sp404` scheme ("Operation not supported"). Another folder must be empty
+  (mounting would hide its contents; a lone `.DS_Store` doesn't count) and is created if
+  missing.
 - **Settings travel in the URL**, because the extension opens the drive in `loadResource`,
   before `-o` options arrive: `sp404://unit?port=/dev/cu.usbmodem1101&cache-secs=5`, plus
   `&read-only` and `-r` for a read-only mount. The extension logs what it received, and
@@ -307,20 +345,16 @@ How it works:
   the volume's source, which is how `sp404drive` finds its mounts.
 - **Unmounting.** `sp404drive unmount` runs `umount` and waits for it, at most 60 s.
   `umount` returns once the extension has saved everything, waited out the unit's session
-  (up to 3 s) and closed the port. Finder's Eject and `diskutil unmount` take the same path
-  (`diskutil` tested; Finder not yet); they leave the empty `~/SP-404MKII` folder behind,
-  and the next `mount` uses it. A `.DS_Store` that Finder may put in that empty folder
-  doesn't count as content, and `unmount` removes it with the folder. If `umount` is still
-  running after 60 s, `unmount` fails (exit status 1) and says not to unplug the unit or
-  start Roland's app yet, so a script doesn't carry on while the drive may still hold the
-  port (not tested: nothing took that long). With no folder given, `unmount` takes
-  whichever SP-404MKII volume is mounted.
+  (up to 3 s) and closed the port. Finder's Eject and `diskutil unmount` take the same path.
+  If `umount` is still running after 60 s, `unmount` fails (exit status 1) and says not to
+  unplug the unit or start Roland's app yet, so a script doesn't carry on while the drive
+  may still hold the port (not tested: nothing took that long). With no folder given,
+  `unmount` takes whichever SP-404MKII volume is mounted.
 - **Errors, in words:** a second mount of the same unit ("already mounted at ..."); no unit
   connected ("no SP-404MKII found", checked before mounting); the port held by another
   program ("in use by another program, probably Roland's SP-404MKII app"); macOS not
   starting the extension (it isn't switched on, or the app isn't installed: the message
-  says where to switch it on); macOS older than 26; a folder that isn't empty (a lone
-  `.DS_Store` doesn't count); `unmount`
+  says where to switch it on); macOS older than 26; a folder that isn't empty; `unmount`
   while a program has a file open or a terminal is in a folder on the drive ("in use").
 
 `mount -F` can still be used by hand:
@@ -331,18 +365,25 @@ mount -F -t sp404 sp404://unit ~/SP404         # read-write
 umount ~/SP404
 ```
 
-How the volume works:
+The volume:
 
+- **The serial link.** `link/macos.rs` opens the port raw at 921600 baud with DTR and RTS
+  asserted and claims it exclusively (`TIOCEXCL`). The reader waits in `select(2)` on the
+  port and a wake-up pipe, with no timeout (`poll(2)` doesn't support device files on
+  macOS); unplugging the unit ends that wait at once, as on Windows. The port is found by
+  USB id (0582:02E7) through the `serialport` crate's port listing; its own port code
+  isn't used.
 - **Opening and closing the drive.** `loadResource` opens the drive, on the port named in
-  the URL or the first unit found by USB id (0582:02E7). It never falls back to just any
+  the URL or the first unit found by USB id. It never falls back to just any
   `/dev/cu.usbmodem*`, which could be another device; the lookup by USB id works inside the
-  extension's sandbox (measured with a hand mount without `port=`). Each mount gets a new extension process; a
-  second load in the same process while the drive is open is refused without touching it. A held port (Roland's app) fails the mount with "Resource busy"; a missing unit
-  should fail it with "Operation not supported by device" (not tested). Opening it here rather than in `activate`
-  matters: after a failed `activate`, FSKit keeps the resource loaded and refuses every
-  later mount until the extension process ends; after a failed load it doesn't.
-  Unmounting closes the drive, saving any file still being written and waiting out the
-  unit's session, as on Windows.
+  extension's sandbox (measured with a hand mount without `port=`). Each mount gets a new
+  extension process; a second load in the same process while the drive is open is refused
+  without touching it. A held port (Roland's app) fails the mount with "Resource busy"; a
+  missing unit should fail it with "Operation not supported by device" (not tested).
+  Opening it here rather than in `activate` matters: after a failed `activate`, FSKit
+  keeps the resource loaded and refuses every later mount until the extension process
+  ends; after a failed load it doesn't. Unmounting closes the drive, saving any file still
+  being written and waiting out the unit's session, as on Windows.
 - **Read-only.** `mount -r` and `-o rdonly` don't reach `loadResource`; they arrive in the
   volume's `activate` as `-o ro` and `-o rdonly`. The volume then asks FSKit for a
   read-only mount (`requestedMountOptions`), so the kernel refuses changes with "Read-only
@@ -355,71 +396,118 @@ How the volume works:
 - **Open, close and writing.** FSKit's open and close calls carry modes (read, write, and
   the modes kept on close), which the core turns into "upload when the last writer closes",
   as on Windows. FSKit passes each write on at once, and the program's `close()` waits until
-  the file is on the unit. Unlike on Windows, **a failed upload is reported to the program**:
-  the error FSKit gets from the close is what `close()` returns, so `cp` says
-  "Input/output error" and exits with 1 (tested by making the close fail on purpose, in a
-  test build; a real upload failure needs the unit to go away mid-write, not tested).
-  `fsync`, `F_FULLFSYNC` and `sync` never reach the volume (measured), so they don't save
-  anything: closing the file, or unmounting, does.
-- **Names** are case-insensitive for ASCII letters and case-preserving, as on Windows, and
-  are passed to the core precomposed (NFC). Measured on the unit: it stores a name as the
-  UTF-8 it's given, without normalising it, so a card written by a Mac can hold decomposed
-  (NFD) names; `Été.txt` and `été.txt` are two different files there. The core matches a
-  name that isn't found as given against the folder's names in NFC, so such a file is found
-  by its precomposed name (and the other way round), and two names that differ only in
-  the case of a non-ASCII letter stay two items. The unit refuses to create some non-ASCII
-  names (`É.txt`, `ÉTÉ.txt`, `Ü.txt` beside `ü.txt`, `Cafe\u{301}3.txt`) while it accepts
-  others (`été.txt`, `Été.txt`, `ü.txt`, `ñ.txt`, `日本.txt`, `e\u{301}x.txt`); why is unknown.
-  The drive reports such a refusal as "Input/output error".
+  the file is on the unit; the error FSKit gets from the close is what `close()` returns.
+- **Names** are passed to the core precomposed (NFC). Measured on the unit: it stores a
+  name as the UTF-8 it's given, without normalising it, so a card written by a Mac can
+  hold decomposed (NFD) names; `Été.txt` and `été.txt` are two different files there. The
+  core matches a name that isn't found as given against the folder's names in NFC, and
+  two names that differ only in the case of a non-ASCII letter stay two items. The unit
+  refused `É.txt`, `ÉTÉ.txt`, `Ü.txt` beside `ü.txt` and `Cafe\u{301}3.txt`, and accepted
+  `été.txt`, `Été.txt`, `ü.txt`, `ñ.txt`, `日本.txt` and `e\u{301}x.txt`.
 - **Errors.** The unit refuses a request without saying why (a full card, a name it won't
   take), so a refusal is "Input/output error" (`EIO`), not "Permission denied"; "Permission
   denied" is kept for what the drive itself won't do (the fixed folders, housekeeping
-  folders). A housekeeping file over 16 MiB is "File too large".
-- **Deleted or replaced while open.** A file deleted, or replaced by a rename, while a
-  program still has it open is never saved again, and its handle never reads the unit
-  again: the path now names nothing, or another file. What that program wrote stays
-  readable and writable through its handle until it closes it, then is thrown away (the
-  `mkstemp` and `unlink` pattern). If its contents weren't in memory (only read, not
-  written), later reads and writes through the old handle fail with "Input/output error"
-  rather than return another file's data; the page cache may still serve reads of what was
-  read before.
-- **Space.** The volume shows the internal storage's size and free space, as on Windows,
-  for `Internal` and `SD-Card` alike: the card's aren't available over USB. A space check
-  before a copy onto the card would therefore use the internal storage's free space
-  (Finder not tested).
-- **Times, permissions, owners, flags.** Every item shows the mount time. Setting times,
-  permissions, owner or flags is accepted and ignored, since the unit keeps none of them;
-  only a file's size can be set.
-- **Extended attributes** are kept in memory, per item, and never reach the unit. macOS
-  sets them on most files it copies (Finder info, quarantine); a volume that refuses them
-  makes macOS write `._` files beside each file instead. They are lost when FSKit lets an
-  item go, and on unmount. With them, `cp`, `cp -p`, `cp -Rp` and `ditto` of files with
-  extended attributes left no `._` file on the card (checked over the link with
-  `list_tree`). Finder itself is not tested yet.
-- **Mac housekeeping files** (`._*`, `.DS_Store`, `.Trashes`, `.fseventsd`,
-  `.Spotlight-V100`, `.TemporaryItems`, `.apdisk`, `.VolumeIcon.icns`) are never created on
-  the unit. A new file with one of these names is kept in memory instead, until it's
-  deleted or the drive is unmounted, so the program writing it carries on: copying a folder
-  that holds a `.DS_Store` or a `._` file with `cp -R` or `ditto` failed ("Permission
-  denied", exit 1) while the drive refused them, and rsync gave up on the whole folder. Such
-  a file isn't listed, since it isn't on the unit, but can be opened, read, written,
-  renamed and deleted by name (so `diff -r` against the source reports it as missing). A
-  copying program's temporary file renamed to such a name is taken off the unit and kept in
-  memory: rsync writes `..DS_Store.XXXXXX` and ditto `.BC.T_XXXXXX`, then renames them to
-  `.DS_Store` (measured). That applies only to a hidden file (its name starts with `.`) the
-  drive created since it was mounted; any other file renamed to such a name (`mv song.wav
+  folders). A housekeeping file over 16 MiB is "File too large". A path too long for the
+  unit (over 199 bytes) is "Invalid argument".
+- **Deleted or replaced while open.** The path now names nothing, or another file, so the
+  old handle never reads the unit again either. If its contents weren't in memory (only
+  read, not written), later reads and writes through it fail with "Input/output error"
+  rather than return another file's data; the page cache may still serve reads of what
+  was read before.
+- **Mac housekeeping files, in detail.** A copying program's temporary file renamed to a
+  housekeeping name is taken off the unit and kept in memory: rsync writes
+  `..DS_Store.XXXXXX` and ditto `.BC.T_XXXXXX`, then renames them to `.DS_Store`
+  (measured). That applies only to a hidden file (its name starts with `.`) the drive
+  created since it was mounted; any other file renamed to such a name (`mv song.wav
   ._song.wav`) is renamed on the unit as asked, so its contents are never lost at unmount.
-  Renamed back to an ordinary name, an in-memory file goes to the unit. A folder
-  that holds only such files counts as empty. Folders with these names, and such files in
-  the drive's root (beside `Internal` and `SD-Card`), are refused. Ones already on the card (from a card reader) are ordinary files.
-- **Unplugging.** The core notices at once (the serial read ends), logs it and fails every
-  request from then on; the extension also sets FSKit's container state to "not ready".
-  Whether FSKit then unmounts the volume by itself is not tested; `umount` ends it.
-- **Logging.** The extension's and the core's lines go to the unified log at "notice" level
-  or above, so they're kept:
-  `log show --last 10m --predicate 'subsystem == "com.polecatplugins.sp404drive"'`. Every
-  open, close, write and size change is also logged at "debug" level, which is only seen
-  live: `log stream --level debug --predicate '...'`.
+  Renamed back to an ordinary name, an in-memory file goes to the unit. A folder that holds
+  only such files counts as empty. Folders with these names, and such files in the drive's
+  root (beside `Internal` and `SD-Card`), are refused. Without this, copying a folder that
+  holds a `.DS_Store` with `cp -R` or `ditto` failed ("Permission denied", exit 1) and
+  rsync gave up on the whole folder.
+- **Extended attributes** are lost when FSKit lets an item go, as well as on unmount.
+- **Memory.** A file being written is held whole in the extension's memory until it's
+  uploaded, as on Windows. Housekeeping files are capped at 16 MiB each.
+
+### Building from source (macOS)
+
+You need:
+
+- Xcode 26 (26.4.1 used here) and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+  (`brew install xcodegen`; 2.46.0 used here).
+- Rust through rustup (`brew install rustup`, then `rustup default stable`). The build
+  uses the `aarch64-apple-darwin` target, which is the host's own on Apple silicon.
+- An Apple Developer team whose provisioning profiles may carry the FSKit entitlement
+  (`com.apple.developer.fskit.fsmodule`). `project.yml` names this project's team
+  (`DEVELOPMENT_TEAM`) and bundle ids (`com.polecatplugins.sp404drive` and
+  `.fsmodule`); change both to build under your own. Signing is automatic: Xcode creates
+  the profiles.
+
+Build and install a development build:
+
+```
+cd macos
+xcodegen generate
+xcodebuild -project SP404Drive.xcodeproj -scheme SP404Drive -configuration Release \
+  -derivedDataPath build -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
+ditto "build/Build/Products/Release/SP-404 Drive.app" "/Applications/SP-404 Drive.app"
+open "/Applications/SP-404 Drive.app"
+```
+
+(Remove the old app first, unmounted, so no stale files are left inside it.)
+
+The extension target's first build phase runs `macos/build-rust.sh`, which runs
+`cargo build -p sp404-ffi --target aarch64-apple-darwin` (with `--release` for the Release
+configuration) and links `target/aarch64-apple-darwin/<profile>/libsp404_ffi.a` with IOKit,
+CoreFoundation and libiconv. It finds cargo in `/opt/homebrew/opt/rustup/bin` or
+`~/.cargo/bin`. The app target's last build phase runs `build-rust.sh cli`, which builds
+the `sp404drive` command, copies it into the app's `Contents/MacOS` and signs it with the
+app's identity and the hardened runtime (with a secure timestamp when archiving); Xcode
+signs the app after that, so the app's signature covers it. The phases run on every build
+(cargo itself skips work that's up to date) and outside Xcode's script sandbox, since cargo
+reads `~/.cargo` and writes `target/`. In a Debug build the core's code sits in
+`SP404FS.debug.dylib` beside the extension's executable.
+
+A notarised release (Developer ID), as made for 0.1.0. `notarytool` needs a keychain
+profile made once with `xcrun notarytool store-credentials`; this project's is
+`polecat-notary`:
+
+```
+cd macos
+xcodegen generate
+xcodebuild archive -project SP404Drive.xcodeproj -scheme SP404Drive -configuration Release \
+  -derivedDataPath build -archivePath build/release/SP404Drive.xcarchive \
+  -allowProvisioningUpdates -allowProvisioningDeviceRegistration
+xcodebuild -exportArchive -archivePath build/release/SP404Drive.xcarchive \
+  -exportPath build/release/export -exportOptionsPlist ExportOptions.plist \
+  -allowProvisioningUpdates
+cd build/release
+ditto -c -k --keepParent "export/SP-404 Drive.app" submit.zip
+xcrun notarytool submit submit.zip --keychain-profile polecat-notary --wait
+xcrun stapler staple "export/SP-404 Drive.app"
+ditto "export/SP-404 Drive.app" "SP-404 Drive.app"
+ditto -c -k --keepParent "SP-404 Drive.app" SP-404-Drive-0.1.0-macos-arm64.zip
+spctl -a -vv "SP-404 Drive.app"
+```
+
+`ExportOptions.plist` asks for `developer-id`, automatic signing and the team. The export
+re-signs everything inside the app with the Developer ID certificate and a timestamp,
+`Contents/MacOS/sp404drive` included (checked with `codesign -dvv`); Xcode creates a "Mac
+Team Direct Provisioning Profile" with the FSKit entitlement. The app's version
+(`CFBundleShortVersionString` in `project.yml`) is kept in step with `Cargo.toml`.
+`macos/build` is ignored by git, as are the generated project, Info.plists and
+entitlements file.
+
+Before committing Rust changes: `cargo fmt --all`, `cargo clippy --workspace --all-targets`
+(no warnings) and `cargo test --workspace`. The tests run against an in-memory device
+(`MemStore`) that behaves like the unit (it refuses to change open files, closes idle
+handles and hands out the lowest free handle number).
+
+### Tested on the unit (macOS)
+
+Each table below is one stage of testing, all on 2026-11-05 with macOS 26 on Apple
+silicon. The unit's live projects were only read: every write went to a test folder on the
+SD card, deleted afterwards.
 
 Tested on 2026-11-05 on the unit (macOS 26, Apple Silicon, Release build, mounted
 read-only):
@@ -501,21 +589,75 @@ against the in-memory device, which fails without the fix:
 | `~/SP-404MKII` holding only a `.DS_Store`; `sp404drive mount`, then `unmount` | mounted; `unmount` (3.02 s) removed the folder and the `.DS_Store` |
 | `cp` of 32 MiB, remounted read-only, compared | 8.36 s (4.0 MB/s, as before); identical; `touch` refused ("Read-only file system") |
 
-Not tested yet: Finder (its sidebar, Eject, copies), Spotlight and Quick Look, unplugging
-while mounted (and so a real upload failure), mounting with no unit attached (the
-extension's "not supported by device" path; `sp404drive` checks for the unit first), the
-message when the extension is switched off (`mount -F` of an unknown file system type
-prints only "Unable to invoke task", which `sp404drive` reads as "not switched on"; the
-switched-off case should look the same), macOS before 26, `sp404drive unmount` giving up
-after 60 s, a Developer ID export and notarisation of this version (with the command inside the app).
+The notarised release (0.1.0), installed in `/Applications`:
+
+| Test | Result |
+|---|---|
+| Archive, Developer ID export, `notarytool submit`, `stapler staple` | Accepted, no issues in the notary log; stapled; `codesign --verify --deep --strict` passes |
+| `spctl -a -vv` on the app, and on a copy unpacked from the zip and marked as downloaded | "Notarized Developer ID" |
+| `sp404drive --version` from that quarantined copy | runs (`sp404drive 0.1.0`) |
+| Replace the app in `/Applications`, open it once, `sp404drive mount --read-only` | mounted in 0.82 s, with the extension still switched on; the extension process was the notarised one (Developer ID signature); the root, `Internal` (21 entries) and `SD-Card` listed; a 4 MB sample read in 1.05 s (3.9 MB/s); `touch` refused ("Read-only file system") |
+| `sp404drive unmount` | 3.05 s; the port free (`lsof`); `~/SP-404MKII` removed |
+
+Not tested yet:
+
+- Finder: the sidebar entry, Eject, copies and moves by dragging, `.DS_Store` writes;
+  Spotlight and Quick Look (they shouldn't read whole files).
+- Unplugging the unit or switching it off while mounted, and so a real upload failure.
+- Mounting with no unit attached through `mount -F` (the extension's "not supported by
+  device" path; `sp404drive` checks for the unit first).
+- The message when the extension is switched off. `mount -F` of an unknown file system
+  type prints only "Unable to invoke task", which `sp404drive` reads as "not switched on";
+  the switched-off case should look the same.
+- A first install on another Mac: opening the downloaded app by double-clicking it and
+  switching the extension on from scratch.
+- macOS before 26 (the message), Intel Macs (no build yet), `sp404drive unmount` giving up
+  after 60 s, `sudo ln` into `/usr/local/bin` (a link elsewhere on `PATH` was tested).
 
 Still to do for the Mac version:
 
-1. testing Finder copies and moves, Eject and the sidebar, and Spotlight and Quick Look
-   (they shouldn't read whole files);
+1. testing Finder copies and moves, Eject and the sidebar, and Spotlight and Quick Look;
 2. unplugging while mounted, and what FSKit does then;
-3. an Intel or universal build, and a notarised release;
-4. perhaps mounting from the app itself (a menu bar item), and at login or plug-in.
+3. an Intel or universal build (a second cargo target and `lipo`);
+4. publishing the release (the zip is built, nothing is published);
+5. perhaps mounting from the app itself (a menu bar item), and at login or plug-in.
+
+## Code layout
+
+```
+src/link/      The serial link: request/reply logic over a Port (mod.rs, platform-neutral,
+               on sp404-proto), the Windows port with overlapped I/O (windows.rs), and
+               the macOS port, waiting in select(2) (macos.rs).
+src/store.rs   Store trait: what the drive needs from the device. DeviceStore implements it
+               over the link; MemStore (tests) in memory.
+src/vfs.rs     The filesystem, independent of the OS: path mapping, listing cache, shared
+               open-file state, read-handle pool, write buffering. Unit-tested.
+src/winfs.rs   Windows front end: WinFsp callbacks -> vfs::Drive.
+src/host.rs    The background host on Windows: serving the drive, and how sp404drive
+               starts it (through Explorer, reporting over a named pipe) and stops it
+               (a named event and mutex per mount point).
+src/items.rs   The macOS core over vfs::Drive, for FSKit: numbered items (the root is
+               item 2), open modes and the upload when the last writer closes, files
+               deleted or replaced while open, NFC name matching, and Mac housekeeping
+               files kept in memory. Unit-tested.
+src/main.rs    sp404drive(.exe), the command line; src/mac_cli.rs is its macOS part
+               (mount and unmount through mount -F and umount). Unit-tested.
+src/bin/sp404drive-host.rs
+               sp404drive-host.exe, the windowless background process.
+ffi/           The macOS core as a static library with a C interface (crate sp404-ffi,
+               libsp404_ffi.a): src/lib.rs (open and close the drive, items, read, write,
+               space, logging; errors as errno values; panics caught), include/sp404.h,
+               and include/module.modulemap so Swift can import it as SP404Core.
+macos/         The Mac app and its FSKit extension (Swift), as an XcodeGen project
+               (project.yml): App/main.swift (the app, which only carries the extension
+               and the command), Extension/FileSystem.swift (loading the resource, the
+               URL's settings), Extension/Volume.swift (every FSKit call -> sp404.h),
+               Extension/Item.swift (an item and its in-memory extended attributes),
+               build-rust.sh (builds ffi/ and the sp404drive command for Xcode), and
+               ExportOptions.plist (the Developer ID export).
+examples/      Checks run against the unit with the drive unmounted: link_check (the
+               link), idle_handles (issue #1), list_tree (what is really in a folder).
+```
 
 ## Contributing
 
@@ -567,7 +709,7 @@ and code, and from testing against a real SP-404MKII.
 Like SparkyMK2, it is largely AI-written. An AI assistant (Claude) wrote most of the code
 and documentation, working with the author, and the drive was tried on a real unit:
 browsing both volumes, reading and writing files, renaming and deleting, unmounting, and
-unplugging while mounted. Anything not yet tested is marked as such in this README.
+(on Windows) unplugging while mounted. Anything not yet tested is marked as such in this README.
 
 ## License
 
