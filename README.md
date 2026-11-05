@@ -74,6 +74,20 @@ cleanup.
 The drive logs to `%LOCALAPPDATA%\sp404drive\logs\S.log` (one file per mount point,
 started afresh on each mount).
 
+### Day-to-day sequence
+
+The drive and Roland's SP-404MKII app can't use the unit at the same time. Nothing mounts
+the drive automatically, so once unmounted it stays unmounted, across unplugging the unit
+and across reboots, until you run `sp404drive mount` again. To switch to the app:
+
+1. `sp404drive unmount` (it waits until the drive has gone and the port is free).
+2. Use Roland's app.
+3. Quit the app, then `sp404drive mount` when you want the drive back.
+
+If you skip step 1, the app won't find the unit, because the drive holds the port. If the
+app is still open at step 3, `mount` reports that the port is busy and asks whether the
+app is still connected.
+
 Options:
 
 | Option | Meaning |
