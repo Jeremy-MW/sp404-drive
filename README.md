@@ -70,9 +70,12 @@ The drive unmounts when you:
 - unplug the device or switch it off. The serial read that is always waiting on the port
   fails at that moment, and the drive unmounts. Nothing polls.
 
-On the way out, it saves any file still being written and takes the device off its
-remote screen (the app's "MKII EXIT"). Signing out of Windows ends it without that
-cleanup.
+On the way out, it saves any file still being written, then waits until 3 seconds have
+passed since its last message to the unit before letting go of the port. The unit treats
+any message as the start of a short session, and closing the port during one while pads
+are being played quickly can freeze it (see "How it behaves"). So `unmount` can take up to
+3 seconds longer than the saving itself. Signing out of Windows ends the drive without
+that cleanup.
 
 The drive logs to `%LOCALAPPDATA%\sp404drive\logs\S.log` (one file per mount point,
 started afresh on each mount).
@@ -100,6 +103,8 @@ written:
   written by another program, such as a DAW render, is sent when that program closes it.
 - For certainty, run `sp404drive unmount` first. It saves anything still waiting and only
   says "Unmounted" once the unit has confirmed. This is the drive's "Safely Remove".
+- Don't pull the cable while playing pads quickly within 3 seconds of using the drive: the
+  unit can freeze (see "How it behaves").
 
 If the unit loses power during an upload, the file on it is left incomplete, and the
 program that wrote it isn't told; only the log records the failure.
@@ -137,6 +142,14 @@ Options:
 - **Capacity.** Free space comes from the internal storage. The device doesn't report its
   total size or anything for the card, so the drive reports the total as equal to the free
   space.
+- **The unit's session, and a freeze.** Every message from a computer starts or extends
+  a session of about 2.2-2.5 seconds on the unit. While it lasts, each pad hit makes the
+  unit send a message back. If the port closes during a session while pads are being hit
+  quickly, the unit freezes: controls and the power switch stop working. The drive keeps
+  the port open while mounted and reads everything, and waits the session out before
+  closing it, so this can only happen if the cable is pulled at the wrong moment. To bring
+  a frozen unit back, open and close its serial port, for example by running
+  `sp404drive mount` and `sp404drive unmount`.
 - **Names.** Lookups ignore case, as on Windows, and the drive uses the device's own
   spelling of each name. A full path on the device can be at most 199 bytes.
 - **Internal storage is live.** Changing files under `Internal\ROLAND\SP-404MKII` edits the
@@ -215,7 +228,6 @@ We use SparkyMK2 ("Sparky") in four ways: one crate is compiled in, one file was
 | `crates/sp404-proto/src/frame.rs` | `Message`, `Channel`, `Decoder`: building and splitting the serial messages |
 | `crates/sp404-proto/src/fileapi.rs` | the file requests (`open`, `close`, `read`, `write`, `seek`, `stat`, `opendir`, `readdir`, `closedir`, `mkdir`, `rmdir`, `unlink`, `rename`, `free_kb`), `parse_reply`, `Reply`, `Stat`, `DirEntry`, `CHUNK`, `WRITE_BATCH`, `ROOT`, open flags, and the path mapping that `Internal` and `SD-Card` rely on |
 | `crates/sp404-proto/src/septet.rs` | used inside `fileapi.rs` to encode numbers; we don't call it directly |
-| `crates/sp404-proto/src/control.rs` | `mkii_exit()` only, sent when unmounting |
 | `crates/sp404-proto/src/lib.rs` | `ProtoError` |
 
 The crate's other files (`pad.rs`, `params.rs`, `settings.rs`) are compiled because they're part of the crate, but nothing calls them.

@@ -60,7 +60,7 @@ pub trait Store: Send + Sync {
     fn is_connected(&self) -> bool {
         true
     }
-    /// Let go of the device: leave its remote screen.
+    /// Let go of the device: the last call before the link closes.
     fn goodbye(&self) {}
 }
 
@@ -197,8 +197,10 @@ impl Store for DeviceStore {
         !self.dev.is_closed()
     }
 
+    /// Closing the port while the device's session is alive can freeze it, so wait the
+    /// session out first, sending nothing.
     fn goodbye(&self) {
-        let _ = self.dev.exclusive(|d| d.mkii_exit());
+        self.dev.exclusive(|d| d.let_session_lapse());
     }
 }
 
@@ -237,6 +239,11 @@ pub mod mem {
 
         fn log(&self, what: String) {
             self.requests.lock().unwrap().push(what);
+        }
+
+        /// Device handles currently open.
+        pub fn open_handles(&self) -> usize {
+            self.handles.lock().unwrap().len()
         }
 
         /// Like the device after a couple of seconds without requests: close every open

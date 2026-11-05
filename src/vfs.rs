@@ -970,8 +970,7 @@ impl Drive {
         }
     }
 
-    /// Unmounting: save every open file with changes, close all handles, release the
-    /// device.
+    /// Unmounting: save every open file with changes, then release the device.
     pub fn shutdown(&self) {
         let open: Vec<Arc<FileInner>> = self
             .files
@@ -986,10 +985,9 @@ impl Drive {
                 log::error!("could not save {}: {e}", file.path());
             }
         }
-        let handles = std::mem::take(&mut self.pool.lock().unwrap().handles);
-        for h in handles {
-            self.store.close(h.handle);
-        }
+        // Pooled read handles are dropped, not closed: the device closes them itself once
+        // the session lapses, and each close would only extend it.
+        self.pool.lock().unwrap().handles.clear();
         if !self.is_disconnected() {
             self.store.goodbye();
         }
@@ -1325,6 +1323,18 @@ mod tests {
         d.shutdown();
         assert_eq!(s.get("SD:pending.txt"), Some(Some(b"data".to_vec())));
         drop(f);
+    }
+
+    #[test]
+    fn shutdown_leaves_read_handles_to_the_device() {
+        let s = sample();
+        let d = drive(&s);
+        let f = d.open(&p("/Internal/QSPI.bin")).unwrap();
+        let mut buf = [0u8; 4];
+        d.read(&f, 0, &mut buf).unwrap();
+        assert_eq!(s.open_handles(), 1);
+        d.shutdown();
+        assert_eq!(s.open_handles(), 1);
     }
 
     #[test]

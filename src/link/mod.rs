@@ -26,7 +26,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use sp404_proto::fileapi::{self, DirEntry, Reply, Stat};
-use sp404_proto::{Channel, Decoder, Message, ProtoError, control};
+use sp404_proto::{Channel, Decoder, Message, ProtoError};
 
 /// USB ids of the SP-404MKII's serial function.
 pub const USB_VID: u16 = 0x0582;
@@ -39,6 +39,9 @@ const SETTLE: Duration = Duration::from_millis(350);
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// Closing a file just written can take the device a while, as it finishes storing it.
 const CLOSE_AFTER_WRITE: Duration = Duration::from_secs(20);
+/// How long the device's session lasts after the last message from the host (measured at
+/// 2.2-2.5 s), with a margin. See [`Link::let_session_lapse`].
+const SESSION: Duration = Duration::from_secs(3);
 /// Open flag: read only (newlib `O_RDONLY`).
 pub const OPEN_READ_ONLY: u32 = fileapi::flags::READ_ONLY;
 
@@ -81,6 +84,8 @@ pub struct Link {
     closed: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     reader: Option<JoinHandle<()>>,
+    /// When the last message went to the device.
+    last_sent: Mutex<Option<Instant>>,
 }
 
 impl Link {
@@ -109,6 +114,7 @@ impl Link {
             closed,
             stopping,
             reader: Some(reader),
+            last_sent: Mutex::new(None),
         })
     }
 
@@ -131,6 +137,7 @@ impl Link {
         if self.is_closed() {
             return Err(Error::Closed);
         }
+        *self.last_sent.lock().unwrap() = Some(Instant::now());
         self.port.write_all(&msg.encode()).map_err(|e| {
             if self.is_closed() {
                 Error::Closed
@@ -138,12 +145,6 @@ impl Link {
                 Error::Io(e)
             }
         })
-    }
-
-    /// Send without waiting for a reply.
-    fn fire(&self, msg: &Message) -> Result<()> {
-        let _inbox = self.inbox.lock().unwrap();
-        self.send(msg)
     }
 
     fn wait(
@@ -335,10 +336,29 @@ impl Link {
         result.map(|()| entries)
     }
 
-    /// Take the device off its remote screen (the app's "MKII EXIT"). No reply.
-    pub fn mkii_exit(&self) -> Result<()> {
-        self.fire(&Message::short(Channel::Control, &control::mkii_exit()))
+    /// Wait, sending nothing, until the device's session has lapsed; call it last, before
+    /// the port closes.
+    ///
+    /// Every message from the host starts or extends a session of about 2.2-2.5 s. While
+    /// it lasts, the device pushes a message on every pad hit; if the port closes then,
+    /// with pads being hit quickly, the device freezes until the port is opened again. The
+    /// reader thread keeps taking in whatever arrives meanwhile. One wait, only as long as
+    /// needed; none if the last message was long enough ago.
+    pub fn let_session_lapse(&self) {
+        let last = *self.last_sent.lock().unwrap();
+        let wait = lapse_wait(last, Instant::now());
+        if !wait.is_zero() && !self.is_closed() {
+            log::debug!("waiting {wait:?} for the device's session to lapse");
+            std::thread::sleep(wait);
+        }
     }
+}
+
+/// How much longer the session lasts after a message sent at `last`.
+fn lapse_wait(last: Option<Instant>, now: Instant) -> Duration {
+    last.map_or(Duration::ZERO, |t| {
+        SESSION.saturating_sub(now.duration_since(t))
+    })
 }
 
 impl Drop for Link {
@@ -384,5 +404,24 @@ fn read_loop(
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waits_out_the_session_only_when_needed() {
+        let now = Instant::now();
+        assert_eq!(lapse_wait(None, now), Duration::ZERO);
+        assert_eq!(lapse_wait(Some(now), now), SESSION);
+        let a_second_ago = now - Duration::from_secs(1);
+        assert_eq!(
+            lapse_wait(Some(a_second_ago), now),
+            SESSION - Duration::from_secs(1)
+        );
+        let long_ago = now - Duration::from_secs(10);
+        assert_eq!(lapse_wait(Some(long_ago), now), Duration::ZERO);
     }
 }
