@@ -309,13 +309,18 @@ How it works:
   `umount` returns once the extension has saved everything, waited out the unit's session
   (up to 3 s) and closed the port. Finder's Eject and `diskutil unmount` take the same path
   (`diskutil` tested; Finder not yet); they leave the empty `~/SP-404MKII` folder behind,
-  and the next `mount` uses it. With no folder given, `unmount` takes whichever
-  SP-404MKII volume is mounted.
+  and the next `mount` uses it. A `.DS_Store` that Finder may put in that empty folder
+  doesn't count as content, and `unmount` removes it with the folder. If `umount` is still
+  running after 60 s, `unmount` fails (exit status 1) and says not to unplug the unit or
+  start Roland's app yet, so a script doesn't carry on while the drive may still hold the
+  port (not tested: nothing took that long). With no folder given, `unmount` takes
+  whichever SP-404MKII volume is mounted.
 - **Errors, in words:** a second mount of the same unit ("already mounted at ..."); no unit
   connected ("no SP-404MKII found", checked before mounting); the port held by another
   program ("in use by another program, probably Roland's SP-404MKII app"); macOS not
   starting the extension (it isn't switched on, or the app isn't installed: the message
-  says where to switch it on); macOS older than 26; a folder that isn't empty; `unmount`
+  says where to switch it on); macOS older than 26; a folder that isn't empty (a lone
+  `.DS_Store` doesn't count); `unmount`
   while a program has a file open or a terminal is in a folder on the drive ("in use").
 
 `mount -F` can still be used by hand:
@@ -329,7 +334,9 @@ umount ~/SP404
 How the volume works:
 
 - **Opening and closing the drive.** `loadResource` opens the drive, on the port named in
-  the URL or the first unit found by USB id. Each mount gets a new extension process; a
+  the URL or the first unit found by USB id (0582:02E7). It never falls back to just any
+  `/dev/cu.usbmodem*`, which could be another device; the lookup by USB id works inside the
+  extension's sandbox (measured with a hand mount without `port=`). Each mount gets a new extension process; a
   second load in the same process while the drive is open is refused without touching it. A held port (Roland's app) fails the mount with "Resource busy"; a missing unit
   should fail it with "Operation not supported by device" (not tested). Opening it here rather than in `activate`
   matters: after a failed `activate`, FSKit keeps the resource loaded and refuses every
@@ -354,8 +361,32 @@ How the volume works:
   test build; a real upload failure needs the unit to go away mid-write, not tested).
   `fsync`, `F_FULLFSYNC` and `sync` never reach the volume (measured), so they don't save
   anything: closing the file, or unmounting, does.
-- **Names** are case-insensitive and case-preserving, and are passed to the core
-  precomposed (NFC).
+- **Names** are case-insensitive for ASCII letters and case-preserving, as on Windows, and
+  are passed to the core precomposed (NFC). Measured on the unit: it stores a name as the
+  UTF-8 it's given, without normalising it, so a card written by a Mac can hold decomposed
+  (NFD) names; `Été.txt` and `été.txt` are two different files there. The core matches a
+  name that isn't found as given against the folder's names in NFC, so such a file is found
+  by its precomposed name (and the other way round), and two names that differ only in
+  the case of a non-ASCII letter stay two items. The unit refuses to create some non-ASCII
+  names (`É.txt`, `ÉTÉ.txt`, `Ü.txt` beside `ü.txt`, `Cafe\u{301}3.txt`) while it accepts
+  others (`été.txt`, `Été.txt`, `ü.txt`, `ñ.txt`, `日本.txt`, `e\u{301}x.txt`); why is unknown.
+  The drive reports such a refusal as "Input/output error".
+- **Errors.** The unit refuses a request without saying why (a full card, a name it won't
+  take), so a refusal is "Input/output error" (`EIO`), not "Permission denied"; "Permission
+  denied" is kept for what the drive itself won't do (the fixed folders, housekeeping
+  folders). A housekeeping file over 16 MiB is "File too large".
+- **Deleted or replaced while open.** A file deleted, or replaced by a rename, while a
+  program still has it open is never saved again, and its handle never reads the unit
+  again: the path now names nothing, or another file. What that program wrote stays
+  readable and writable through its handle until it closes it, then is thrown away (the
+  `mkstemp` and `unlink` pattern). If its contents weren't in memory (only read, not
+  written), later reads and writes through the old handle fail with "Input/output error"
+  rather than return another file's data; the page cache may still serve reads of what was
+  read before.
+- **Space.** The volume shows the internal storage's size and free space, as on Windows,
+  for `Internal` and `SD-Card` alike: the card's aren't available over USB. A space check
+  before a copy onto the card would therefore use the internal storage's free space
+  (Finder not tested).
 - **Times, permissions, owners, flags.** Every item shows the mount time. Setting times,
   permissions, owner or flags is accepted and ignored, since the unit keeps none of them;
   only a file's size can be set.
@@ -373,8 +404,12 @@ How the volume works:
   denied", exit 1) while the drive refused them, and rsync gave up on the whole folder. Such
   a file isn't listed, since it isn't on the unit, but can be opened, read, written,
   renamed and deleted by name (so `diff -r` against the source reports it as missing). A
-  file renamed to such a name (rsync's `..DS_Store.XXXX` temporary file) is taken off the
-  unit and kept in memory; renamed back to an ordinary name, it goes to the unit. A folder
+  copying program's temporary file renamed to such a name is taken off the unit and kept in
+  memory: rsync writes `..DS_Store.XXXXXX` and ditto `.BC.T_XXXXXX`, then renames them to
+  `.DS_Store` (measured). That applies only to a hidden file (its name starts with `.`) the
+  drive created since it was mounted; any other file renamed to such a name (`mv song.wav
+  ._song.wav`) is renamed on the unit as asked, so its contents are never lost at unmount.
+  Renamed back to an ordinary name, an in-memory file goes to the unit. A folder
   that holds only such files counts as empty. Folders with these names, and such files in
   the drive's root (beside `Internal` and `SD-Card`), are refused. Ones already on the card (from a card reader) are ordinary files.
 - **Unplugging.** The core notices at once (the serial read ends), logs it and fails every
@@ -447,13 +482,32 @@ afterwards:
 | A folder that isn't empty, a file instead of a folder, `--cache-secs` too large | refused before mounting |
 | `mount -F` by hand with `?bogus=1`, or `?port=` not a `/dev/` path | "Invalid argument" (the log says which); the next mount works |
 
+Fixes after a code review, tested on 2026-11-05 on the unit (Release build, read-write,
+only inside a test folder on the card, deleted afterwards; contents checked after
+remounting, and over the link with `list_tree`). Each case was also turned into a unit test
+against the in-memory device, which fails without the fix:
+
+| Test | Result |
+|---|---|
+| `B.bin` open for writing with 50,000 bytes unsaved; `rename("A.bin", "B.bin")`; one more write, then close | the write and `close()` succeed; `B.bin` holds A's 100,000 bytes (before the fix, the close saved B's stale bytes over it) |
+| `B2.bin` open for writing; deleted, made again and written as `NEWNEW` by another handle; the old handle writes 1 byte and closes | `close()` returns "Input/output error"; `B2.bin` is `NEWNEW` (before: the old handle's bytes mixed into it) |
+| `open(O_CREAT\|O_EXCL)`, `unlink`, write 32 KB, read it back (`F_NOCACHE`), close | written and read back correctly; nothing reaches the card (before: the file came back at close) |
+| `K.bin` open for reading; `rename("R.bin", "K.bin")`; read again | K's bytes (from the page cache), never R's; the card holds R's data at `K.bin` |
+| `mv ü.txt ._u.txt` and `mv K.bin .apdisk` (files already on the card) | renamed on the card, contents kept (before: taken off the unit into memory, gone at unmount) |
+| `cp -R`, `ditto`, `rsync -a` (twice) of a folder holding `.DS_Store` and `._a.bin` | all exit 0, contents identical; the log shows rsync's and ditto's temporary files taken off the unit; the card holds only `a.bin` and `sub/b.txt` |
+| Files with names in NFD, and `Été.txt` beside `été.txt`, put on the card over the link | `éx.txt` typed precomposed finds the decomposed file (same inode as its NFD name); `Été.txt` and `été.txt` are two items with their own contents; `ÉX.TXT` isn't found (non-ASCII case counts) |
+| `touch É.txt` (a name the unit refuses) | "Input/output error" (before: "Permission denied") |
+| `mount -F -t sp404 -r sp404://unit` (no port) | the extension found the unit by USB id (`/dev/cu.usbmodem1101`) |
+| `~/SP-404MKII` holding only a `.DS_Store`; `sp404drive mount`, then `unmount` | mounted; `unmount` (3.02 s) removed the folder and the `.DS_Store` |
+| `cp` of 32 MiB, remounted read-only, compared | 8.36 s (4.0 MB/s, as before); identical; `touch` refused ("Read-only file system") |
+
 Not tested yet: Finder (its sidebar, Eject, copies), Spotlight and Quick Look, unplugging
 while mounted (and so a real upload failure), mounting with no unit attached (the
 extension's "not supported by device" path; `sp404drive` checks for the unit first), the
 message when the extension is switched off (`mount -F` of an unknown file system type
 prints only "Unable to invoke task", which `sp404drive` reads as "not switched on"; the
-switched-off case should look the same), macOS before 26, non-ASCII names on the unit, a
-Developer ID export and notarisation of this version (with the command inside the app).
+switched-off case should look the same), macOS before 26, `sp404drive unmount` giving up
+after 60 s, a Developer ID export and notarisation of this version (with the command inside the app).
 
 Still to do for the Mac version:
 

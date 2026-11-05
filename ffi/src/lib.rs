@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
 use std::time::{Duration, UNIX_EPOCH};
 
-use sp404_drive::items::{Item, Items};
+use sp404_drive::items::{self, Item, Items};
 use sp404_drive::link::{Link, SerialPort, find_ports};
 use sp404_drive::store::DeviceStore;
 use sp404_drive::vfs::{Drive, FsError, Options};
@@ -63,7 +63,10 @@ fn errno(e: &FsError) -> i32 {
         FsError::IsADirectory => libc_errno::EISDIR,
         FsError::Exists => libc_errno::EEXIST,
         FsError::NotEmpty => libc_errno::ENOTEMPTY,
-        FsError::AccessDenied | FsError::Refused(_) => libc_errno::EACCES,
+        FsError::AccessDenied => libc_errno::EACCES,
+        FsError::Refused(what) if what == items::TOO_LARGE => libc_errno::EFBIG,
+        // The unit says no without saying why (a full card, say): not a permission.
+        FsError::Refused(_) => libc_errno::EIO,
         // Finder and `mv` copy and delete instead.
         FsError::CrossVolume => libc_errno::EXDEV,
         FsError::InvalidName => libc_errno::EINVAL,
@@ -84,6 +87,7 @@ mod libc_errno {
     pub const ENOTDIR: i32 = 20;
     pub const EISDIR: i32 = 21;
     pub const EINVAL: i32 = 22;
+    pub const EFBIG: i32 = 27;
     pub const EROFS: i32 = 30;
     pub const ENAMETOOLONG: i32 = 63;
     pub const ENOTEMPTY: i32 = 66;
@@ -200,26 +204,21 @@ pub extern "C" fn sp_set_logger(f: SpLogFn, max_level: i32) {
 
 // ---- the drive -------------------------------------------------------------------------
 
-/// The serial port to use: the first SP-404MKII the system lists by USB id, or else the
-/// first `/dev/cu.usbmodem*` (in case the sandbox hides the USB details).
+/// The serial port to use: the first SP-404MKII the system lists by USB id (0582:02E7).
+/// Never just any `/dev/cu.usbmodem*`: that may be another device (an Arduino, an audio
+/// interface), which would be sent the unit's protocol. Measured: the lookup works inside
+/// the extension's sandbox.
 fn default_port() -> Result<String, String> {
     match find_ports() {
-        Ok(ports) if !ports.is_empty() => return Ok(ports[0].name.clone()),
-        Ok(_) => {}
-        Err(e) => log::debug!("listing ports by USB id: {e}"),
+        Ok(ports) => match ports.first() {
+            Some(port) => {
+                log::info!("found the SP-404MKII by USB id on {}", port.name);
+                Ok(port.name.clone())
+            }
+            None => Err("no SP-404MKII found (USB 0582:02E7)".to_string()),
+        },
+        Err(e) => Err(format!("no SP-404MKII found: listing ports by USB id: {e}")),
     }
-    let mut found: Vec<String> = std::fs::read_dir("/dev")
-        .map_err(|e| format!("listing /dev: {e}"))?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n.starts_with("cu.usbmodem"))
-        .map(|n| format!("/dev/{n}"))
-        .collect();
-    found.sort();
-    found
-        .into_iter()
-        .next()
-        .ok_or_else(|| "no SP-404MKII found (USB 0582:02E7)".to_string())
 }
 
 /// Called once, on the link's reader thread, when the unit is unplugged or switched off.
@@ -311,7 +310,12 @@ pub unsafe extern "C" fn sp_drive_close(d: *mut SpDrive) {
     }
     // SAFETY: per this function's contract.
     let d = unsafe { Box::from_raw(d) };
-    let _ = catch_unwind(AssertUnwindSafe(|| d.items.shutdown()));
+    if catch_unwind(AssertUnwindSafe(|| d.items.shutdown())).is_err() {
+        log::error!("panic while closing the drive");
+        // Still wait out the unit's session before the port closes: closing it during a
+        // session can freeze the unit.
+        let _ = catch_unwind(AssertUnwindSafe(|| d.items.drive().goodbye()));
+    }
     drop(d);
     log::info!("drive closed");
 }
@@ -323,16 +327,18 @@ pub unsafe extern "C" fn sp_drive_close(d: *mut SpDrive) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sp_drive_time(d: *const SpDrive) -> i64 {
     // SAFETY: per this function's contract.
-    match unsafe { drive(d) } {
-        Ok(d) => d
-            .items
+    let Ok(d) = (unsafe { drive(d) }) else {
+        return 0;
+    };
+    catch_unwind(AssertUnwindSafe(|| {
+        d.items
             .drive()
             .mounted_at()
             .duration_since(UNIX_EPOCH)
             .map(|t| t.as_secs() as i64)
-            .unwrap_or(0),
-        Err(_) => 0,
-    }
+            .unwrap_or(0)
+    }))
+    .unwrap_or(0)
 }
 
 /// # Safety
@@ -364,7 +370,10 @@ pub unsafe extern "C" fn sp_drive_set_read_only(d: *const SpDrive, read_only: bo
 pub unsafe extern "C" fn sp_space(d: *const SpDrive, total: *mut u64, free: *mut u64) {
     // SAFETY: per this function's contract.
     if let Ok(d) = unsafe { drive(d) } {
-        let (t, f) = d.items.drive().space();
+        let Ok((t, f)) = catch_unwind(AssertUnwindSafe(|| d.items.drive().space())) else {
+            log::error!("panic in a drive call");
+            return;
+        };
         // SAFETY: per this function's contract.
         unsafe {
             *total = t;

@@ -81,7 +81,7 @@ pub fn mount(
     let result = run(cmd, MOUNT_WAIT);
     let failed = |reason: anyhow::Error| {
         if created {
-            let _ = fs::remove_dir(&folder);
+            remove_folder(&folder);
         }
         Err(reason)
     };
@@ -139,12 +139,15 @@ pub fn unmount(mount_point: &str) -> anyhow::Result<()> {
     let output = match run(cmd, UNMOUNT_WAIT).context("running /sbin/umount")? {
         Some(output) => output,
         None => {
-            println!(
-                "{} is still unmounting after {} s (saving files?); see {LOG_HINT}",
+            // Not done: the drive may still be saving or holding the port, so whatever
+            // runs next (unplugging, Roland's app) mustn't take this as unmounted.
+            bail!(
+                "{} is still unmounting after {} s (saving files?). Don't unplug the \
+                 SP-404MKII or start Roland's app yet; `mount` shows when it's gone. See \
+                 {LOG_HINT}",
                 folder.display(),
                 UNMOUNT_WAIT.as_secs()
             );
-            return Ok(());
         }
     };
     if !output.status.success() {
@@ -163,7 +166,7 @@ pub fn unmount(mount_point: &str) -> anyhow::Result<()> {
     }
     // The default folder exists only for the drive; take it away again (only if empty).
     if folder == default {
-        let _ = fs::remove_dir(&folder);
+        remove_folder(&folder);
     }
     println!("Unmounted {}.", folder.display());
     Ok(())
@@ -264,11 +267,31 @@ fn choose_port(asked: Option<String>) -> anyhow::Result<String> {
     }
 }
 
+/// Whether a folder entry counts for "empty": Finder's `.DS_Store` doesn't. Finder may
+/// write one into the empty mount folder while nothing is mounted there (it stays after
+/// an Eject).
+fn counts(entry: &io::Result<fs::DirEntry>) -> bool {
+    !entry.as_ref().is_ok_and(|e| e.file_name() == ".DS_Store")
+}
+
+/// Remove an empty mount folder (and a lone `.DS_Store` in it); leave anything else.
+fn remove_folder(folder: &Path) {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return;
+    };
+    let entries: Vec<_> = entries.collect();
+    if entries.iter().any(counts) {
+        return;
+    }
+    let _ = fs::remove_file(folder.join(".DS_Store"));
+    let _ = fs::remove_dir(folder);
+}
+
 /// Make sure the folder exists and is empty; returns whether it was created.
 fn prepare_folder(folder: &Path) -> anyhow::Result<bool> {
     match fs::read_dir(folder) {
         Ok(mut entries) => {
-            if entries.next().is_some() {
+            if entries.any(|e| counts(&e)) {
                 bail!(
                     "{} isn't empty; mounting there would hide what's in it",
                     folder.display()
@@ -554,6 +577,22 @@ mod tests {
             folder_path("/tmp/sp404-x").unwrap(),
             Path::new("/private/tmp/sp404-x")
         );
+    }
+
+    #[test]
+    fn a_lone_ds_store_leaves_the_folder_empty() {
+        let dir = std::env::temp_dir().join(format!("sp404-cli-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        assert!(prepare_folder(&dir).unwrap(), "created");
+        fs::write(dir.join(".DS_Store"), b"finder").unwrap();
+        assert!(!prepare_folder(&dir).unwrap(), "empty but for .DS_Store");
+        fs::write(dir.join("song.wav"), b"x").unwrap();
+        assert!(prepare_folder(&dir).is_err());
+        remove_folder(&dir);
+        assert!(dir.join("song.wav").exists(), "a folder with files stays");
+        fs::remove_file(dir.join("song.wav")).unwrap();
+        remove_folder(&dir);
+        assert!(!dir.exists());
     }
 
     #[test]

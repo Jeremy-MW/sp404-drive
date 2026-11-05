@@ -10,8 +10,10 @@
 //!
 //! Platform-neutral, so it is tested here against the in-memory device.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+
+use unicode_normalization::UnicodeNormalization;
 
 use crate::vfs::{Attr, Drive, FsError, FsResult, OpenFile, VPath};
 
@@ -22,6 +24,9 @@ const FIRST: u64 = 3;
 
 /// Largest housekeeping file kept in memory (see [`is_mac_metadata`]).
 const MAX_LOCAL: usize = 16 << 20;
+
+/// The refusal for a housekeeping file over [`MAX_LOCAL`] (the C interface gives `EFBIG`).
+pub const TOO_LARGE: &str = "housekeeping file too large";
 
 /// Names macOS creates for itself, which have no place on the unit: AppleDouble files
 /// (`._name`), Finder's folder settings, the trash, and the indexing and event folders.
@@ -60,25 +65,60 @@ struct Node {
     writing: bool,
     /// A housekeeping file kept in memory, never on the unit: its contents.
     local: Option<Vec<u8>>,
+    /// Deleted, or replaced by a rename, while the front end still holds it. Its path is
+    /// stale: it's never looked up or opened by path again (an open file stays usable, in
+    /// memory only; see `vfs`).
+    gone: bool,
 }
 
 struct Table {
     nodes: HashMap<u64, Node>,
     /// Lowercased path -> number: names match without regard to case.
     by_key: HashMap<String, u64>,
+    /// Keys of the files this drive created on the unit since it opened (see
+    /// [`Items::take_off_unit`]).
+    made: HashSet<String>,
     next: u64,
 }
 
+/// A path's key: lowercased in ASCII only, as the drive matches names, so names that
+/// differ in other letters' case are different items.
 fn key(path: &VPath) -> String {
-    path.to_string().to_lowercase()
+    path.to_string().to_ascii_lowercase()
+}
+
+/// A name for comparing spellings: precomposed (NFC), ASCII lowercased.
+fn fold(name: &str) -> String {
+    name.nfc().collect::<String>().to_ascii_lowercase()
 }
 
 impl Table {
     fn path(&self, id: u64) -> FsResult<VPath> {
-        self.nodes
-            .get(&id)
-            .map(|n| n.path.clone())
-            .ok_or(FsError::NotFound)
+        match self.nodes.get(&id) {
+            Some(n) if !n.gone => Ok(n.path.clone()),
+            _ => Err(FsError::NotFound),
+        }
+    }
+
+    /// Item `id` was deleted or replaced: its path no longer leads to it.
+    fn forget_path(&mut self, id: u64) {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.gone = true;
+            // Nothing left to save if it was open.
+            node.writing = false;
+            let k = key(&node.path);
+            if self.by_key.get(&k) == Some(&id) {
+                self.by_key.remove(&k);
+            }
+        }
+    }
+
+    /// Forget that `path`, and everything below it, was made by this drive.
+    fn unmade(&mut self, path: &VPath) {
+        let k = key(path);
+        // `VPath` shows as `\SD-Card\dir\name`.
+        let below = format!("{k}\\");
+        self.made.retain(|m| *m != k && !m.starts_with(&below));
     }
 
     /// The number for `path` (in the device's spelling), numbering it if new.
@@ -99,6 +139,7 @@ impl Table {
                 open: None,
                 writing: false,
                 local: None,
+                gone: false,
             },
         );
         self.by_key.insert(k, id);
@@ -149,16 +190,34 @@ impl Table {
 
     /// `from` was renamed to `to`: move it and everything below it.
     fn moved(&mut self, from: &VPath, to: &VPath) {
-        // Whatever `to` named before (a file replaced by the rename) is gone.
-        if let Some(old) = self.by_key.remove(&key(to))
+        // Whatever `to` named before (a file replaced by the rename) is gone. (Not when
+        // it's the item being renamed: a change of case only.)
+        if let Some(&old) = self.by_key.get(&key(to))
             && let Some(node) = self.nodes.get(&old)
             && !node.path.starts_with(from)
         {
             log::debug!("{to} was replaced by a rename");
+            self.forget_path(old);
+        }
+        self.by_key.remove(&key(to));
+        // What this drive made moves along; what `to` was is no more.
+        let (from_key, to_key) = (key(from), key(to));
+        let below = format!("{from_key}\\");
+        let moving: Vec<String> = self
+            .made
+            .iter()
+            .filter(|m| **m == from_key || m.starts_with(&below))
+            .cloned()
+            .collect();
+        self.made.remove(&to_key);
+        for m in moving {
+            self.made.remove(&m);
+            self.made
+                .insert(format!("{to_key}{}", &m[from_key.len()..]));
         }
         let mut rekeyed = Vec::new();
         for (&id, node) in self.nodes.iter_mut() {
-            if node.path.starts_with(from) {
+            if !node.gone && node.path.starts_with(from) {
                 let old = key(&node.path);
                 node.path = node.path.rebase(from, to);
                 rekeyed.push((old, key(&node.path), id));
@@ -185,6 +244,7 @@ impl Items {
         let mut table = Table {
             nodes: HashMap::new(),
             by_key: HashMap::new(),
+            made: HashSet::new(),
             next: FIRST,
         };
         table.nodes.insert(
@@ -194,6 +254,7 @@ impl Items {
                 open: None,
                 writing: false,
                 local: None,
+                gone: false,
             },
         );
         table.by_key.insert(key(&VPath::root()), ROOT);
@@ -221,8 +282,29 @@ impl Items {
         if dir.is_root() {
             VPath::parse(name)
         } else {
-            Ok(dir.child(name))
+            Ok(dir.child(&self.respell(&dir, name)))
         }
+    }
+
+    /// `name` as spelt in folder `dir` on the unit, if it's there under another Unicode
+    /// form: the front end sends names precomposed (NFC), and a file put on the card by a
+    /// computer may have a decomposed name (NFD). The drive itself compares names byte for
+    /// byte, apart from ASCII case.
+    fn respell(&self, dir: &VPath, name: &str) -> String {
+        if name.is_ascii() {
+            return name.to_string();
+        }
+        let Ok(entries) = self.drive.list(dir) else {
+            return name.to_string();
+        };
+        if entries.iter().any(|e| e.name.eq_ignore_ascii_case(name)) {
+            return name.to_string();
+        }
+        let wanted = fold(name);
+        entries
+            .into_iter()
+            .find(|e| fold(&e.name) == wanted)
+            .map_or_else(|| name.to_string(), |e| e.name)
     }
 
     /// `path` with its last component as the device spells it.
@@ -340,23 +422,18 @@ impl Items {
             return Err(FsError::ReadOnly);
         }
         let path = {
-            let table = self.table.lock().unwrap();
-            let node = table.nodes.get(&id).ok_or(FsError::NotFound)?;
+            let mut table = self.table.lock().unwrap();
+            let node = table.nodes.get_mut(&id).ok_or(FsError::NotFound)?;
             if node.local.is_some() {
                 return Ok(());
             }
             if node.open.is_some() {
-                drop(table);
-                if write {
-                    self.table
-                        .lock()
-                        .unwrap()
-                        .nodes
-                        .get_mut(&id)
-                        .ok_or(FsError::NotFound)?
-                        .writing = true;
-                }
+                // Under the same lock as the check, so a last close can't come between.
+                node.writing |= write;
                 return Ok(());
+            }
+            if node.gone {
+                return Err(FsError::NotFound);
             }
             node.path.clone()
         };
@@ -407,13 +484,18 @@ impl Items {
             Ok(())
         };
         if !keep_read && !keep_write {
-            match Arc::try_unwrap(file) {
-                Ok(file) => self.drive.release(file),
-                // A read or write still running; it lets the file go when it ends.
-                Err(_) => log::debug!("item {id} closed while in use"),
-            }
+            self.let_go(file);
         }
         saved
+    }
+
+    /// Drop a hold on an open file that the table no longer has; whoever drops the last
+    /// one lets it go (saving anything left unsaved, unless the file has gone).
+    fn let_go(&self, file: Arc<OpenFile>) {
+        // Exactly one of several racing callers gets the file.
+        if let Some(file) = Arc::into_inner(file) {
+            self.drive.release(file);
+        }
     }
 
     /// Run `f` with item `id`'s open file, or with one opened just for the call.
@@ -423,11 +505,27 @@ impl Items {
             let node = table.nodes.get(&id).ok_or(FsError::NotFound)?;
             match &node.open {
                 Some(file) => Ok(file.clone()),
+                None if node.gone => return Err(FsError::NotFound),
                 None => Err(node.path.clone()),
             }
         };
         match open {
-            Ok(file) => f(&file),
+            Ok(file) => {
+                let result = f(&file);
+                // Closed meanwhile: then this call lets it go.
+                let held = {
+                    let table = self.table.lock().unwrap();
+                    table
+                        .nodes
+                        .get(&id)
+                        .and_then(|n| n.open.as_ref())
+                        .is_some_and(|o| Arc::ptr_eq(o, &file))
+                };
+                if !held {
+                    self.let_go(file);
+                }
+                result
+            }
             Err(path) => {
                 let file = self.drive.open(&path)?;
                 let result = f(&file);
@@ -458,7 +556,7 @@ impl Items {
                 return Err(FsError::ReadOnly);
             }
             if end > MAX_LOCAL as u64 {
-                return Err(FsError::Refused("housekeeping file too large".into()));
+                return Err(FsError::Refused(TOO_LARGE.into()));
             }
             let (offset, end) = (offset as usize, end as usize);
             if buf.len() < end {
@@ -481,7 +579,7 @@ impl Items {
                 return Err(FsError::ReadOnly);
             }
             if size > MAX_LOCAL as u64 {
-                return Err(FsError::Refused("housekeeping file too large".into()));
+                return Err(FsError::Refused(TOO_LARGE.into()));
             }
             buf.resize(size as usize, 0);
             Ok(())
@@ -503,7 +601,14 @@ impl Items {
         let path = self.child(dir, name)?;
         let file = self.drive.create(&path, is_dir)?;
         let attr = file.attr();
-        let id = self.table.lock().unwrap().id(&file.path());
+        let path = file.path();
+        let id = {
+            let mut table = self.table.lock().unwrap();
+            if !is_dir {
+                table.made.insert(key(&path));
+            }
+            table.id(&path)
+        };
         self.drive.release(file);
         Ok(Item { id, attr })
     }
@@ -562,7 +667,12 @@ impl Items {
                 return Ok(());
             }
         }
-        let file = self.drive.open(&path)?;
+        self.delete_file(&path)
+    }
+
+    /// Delete a file, or an empty folder, from the unit.
+    fn delete_file(&self, path: &VPath) -> FsResult<()> {
+        let file = self.drive.open(path)?;
         let is_dir = file.is_dir();
         let result = self
             .drive
@@ -572,12 +682,10 @@ impl Items {
         self.drive.release(file);
         result?;
         let mut table = self.table.lock().unwrap();
-        if let Some(id) = table.by_key.remove(&key(&path))
-            && let Some(node) = table.nodes.get_mut(&id)
-        {
-            // Nothing left to save if it was open.
-            node.writing = false;
+        if let Some(&id) = table.by_key.get(&key(&path)) {
+            table.forget_path(id);
         }
+        table.unmade(&path);
         if is_dir {
             table.drop_local_below(&path);
         }
@@ -591,7 +699,7 @@ impl Items {
         }
         let size = file.size() as usize;
         if size > MAX_LOCAL {
-            return Err(FsError::Refused("housekeeping file too large".into()));
+            return Err(FsError::Refused(TOO_LARGE.into()));
         }
         let mut data = vec![0; size];
         let mut done = 0;
@@ -632,7 +740,11 @@ impl Items {
                 self.store_local(id, &to, replace)
             };
         }
-        if is_mac_metadata(to_name) {
+        // Folders can't take such names, as they can't be made with them.
+        if is_mac_metadata(to_name) && self.drive.lookup(&from)?.is_dir {
+            return Err(FsError::AccessDenied);
+        }
+        if is_mac_metadata(to_name) && self.is_temporary(&from) {
             match self.drive.lookup(&to) {
                 // Already on the unit: an ordinary rename over it.
                 Ok(_) => {}
@@ -680,16 +792,17 @@ impl Items {
         let data = self
             .with_local(id, |d| d.clone())
             .ok_or(FsError::NotFound)?;
-        let file = match self.drive.lookup(to) {
-            Ok(attr) if replace && !attr.is_dir => self.drive.open(to)?,
+        match self.drive.lookup(to) {
+            // Deleted first, so a handle still open on it can't save it over this one.
+            Ok(attr) if replace && !attr.is_dir => self.delete_file(to)?,
             Ok(_) => return Err(FsError::Exists),
-            Err(FsError::NotFound) => self.drive.create(to, false)?,
+            Err(FsError::NotFound) => {}
             Err(e) => return Err(e),
-        };
+        }
+        let file = self.drive.create(to, false)?;
         let saved = self
             .drive
-            .set_size(&file, 0)
-            .and_then(|_| self.drive.write(&file, Some(0), &data, false))
+            .write(&file, Some(0), &data, false)
             .and_then(|_| self.drive.flush(&file));
         let path = file.path();
         self.drive.release(file);
@@ -698,12 +811,24 @@ impl Items {
         if let Some(node) = table.nodes.get_mut(&id) {
             node.local = None;
         }
+        table.made.insert(key(&path));
         table.repoint(id, &path);
         Ok(path.name().to_string())
     }
 
+    /// Whether `from` is a hidden file this drive made since it opened: a copying
+    /// program's temporary file (rsync writes `.DS_Store` as `..DS_Store.XXXXXX`, then
+    /// renames it). Any other file renamed to a housekeeping name is renamed on the unit
+    /// as asked, so its contents are never lost.
+    fn is_temporary(&self, from: &VPath) -> bool {
+        // `child` spells the name as the request did; the device's spelling may differ in
+        // case only, which `key` ignores.
+        from.name().starts_with('.') && self.table.lock().unwrap().made.contains(&key(from))
+    }
+
     /// Rename file `from`, on the unit, to a housekeeping name: it's taken off the unit and
     /// kept in memory, as rsync does with the `.DS_Store` it writes under a temporary name.
+    /// Only for files this drive made (see [`Items::is_temporary`]).
     fn take_off_unit(
         &self,
         from: &VPath,
@@ -734,6 +859,7 @@ impl Items {
         if let Some(other) = table.local(&to) {
             table.drop_local(other);
         }
+        table.unmade(&from);
         let id = match table.by_key.get(&key(&from)) {
             Some(&id) => id,
             None => table.id(&from),
@@ -745,8 +871,8 @@ impl Items {
         });
         table.repoint(id, &to);
         drop(table);
-        if let Some(file) = open.and_then(|f| Arc::try_unwrap(f).ok()) {
-            self.drive.release(file);
+        if let Some(file) = open {
+            self.let_go(file);
         }
         log::info!("renamed {from} to {to}: keeping it in memory, not on the unit");
         Ok(to.name().to_string())
@@ -787,9 +913,8 @@ impl Items {
             })
             .collect();
         for file in open {
-            if let Ok(file) = Arc::try_unwrap(file) {
-                self.drive.release(file);
-            }
+            // One still in use is saved by the drive's shutdown.
+            self.let_go(file);
         }
         self.drive.shutdown();
     }
@@ -1067,6 +1192,233 @@ mod tests {
             it.create(import.id, ".DS_Store", false),
             Err(FsError::ReadOnly)
         );
+    }
+
+    #[test]
+    fn a_file_replaced_by_a_rename_is_not_saved_over_its_replacement() {
+        let s = sample();
+        let it = items(&s);
+        let import = walk(&it, &["SD-Card", "IMPORT"]);
+        let a = it.create(import.id, "A.wav", false).unwrap();
+        it.open(a.id, true).unwrap();
+        it.write(a.id, 0, b"aaaa").unwrap();
+        it.close(a.id, false, false).unwrap();
+        // B.wav is open for writing, with unsaved writes, and another reader.
+        let b = it.create(import.id, "B.wav", false).unwrap();
+        it.open(b.id, true).unwrap();
+        it.write(b.id, 0, b"bbbbbbbb").unwrap();
+        // `mv A.wav B.wav`
+        it.rename(import.id, "A.wav", import.id, "B.wav", true)
+            .unwrap();
+        assert_eq!(s.get("SD:IMPORT/B.wav"), Some(Some(b"aaaa".to_vec())));
+        // The old B's handle still works, in memory only.
+        let mut buf = [0u8; 16];
+        assert_eq!(it.read(b.id, 0, &mut buf).unwrap(), 8);
+        assert_eq!(&buf[..8], b"bbbbbbbb");
+        assert_eq!(it.write(b.id, 8, b"!").unwrap(), 1);
+        it.close(b.id, false, false).unwrap();
+        assert_eq!(s.get("SD:IMPORT/B.wav"), Some(Some(b"aaaa".to_vec())));
+        // The name leads to the renamed file, under A's number.
+        let found = it.lookup(import.id, "B.wav").unwrap();
+        assert_eq!(found.id, a.id);
+        assert_eq!(found.attr.size, 4);
+        // The old B is gone for good.
+        assert_eq!(it.attr(b.id), Err(FsError::NotFound));
+        assert_eq!(it.read(b.id, 0, &mut buf), Err(FsError::NotFound));
+        assert_eq!(s.open_handles(), 0);
+    }
+
+    #[test]
+    fn a_reader_of_a_replaced_file_never_reads_its_replacement() {
+        let s = sample();
+        let it = items(&s);
+        let import = walk(&it, &["SD-Card", "IMPORT"]);
+        let kick = it.lookup(import.id, "Kick.wav").unwrap();
+        it.open(kick.id, false).unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(it.read(kick.id, 0, &mut buf).unwrap(), 8);
+        let pack = it.lookup(import.id, "pack").unwrap();
+        it.rename(pack.id, "snare.wav", import.id, "Kick.wav", true)
+            .unwrap();
+        assert_eq!(s.get("SD:IMPORT/Kick.wav"), Some(Some(b"snare".to_vec())));
+        // Its contents weren't in memory, and the unit no longer has them.
+        assert!(matches!(it.read(kick.id, 0, &mut buf), Err(FsError::Io(_))));
+        assert!(matches!(it.write(kick.id, 0, b"x"), Err(FsError::Io(_))));
+        it.close(kick.id, false, false).unwrap();
+        assert_eq!(s.get("SD:IMPORT/Kick.wav"), Some(Some(b"snare".to_vec())));
+        assert_eq!(s.open_handles(), 0);
+    }
+
+    #[test]
+    fn a_handle_on_a_deleted_file_leaves_a_new_file_there_alone() {
+        let s = sample();
+        let it = items(&s);
+        let import = walk(&it, &["SD-Card", "IMPORT"]);
+        let old = it.create(import.id, "B.wav", false).unwrap();
+        it.open(old.id, true).unwrap();
+        it.write(old.id, 0, b"OLD!").unwrap();
+        it.close(old.id, false, false).unwrap();
+        it.open(old.id, true).unwrap();
+        // Deleted while open, then made again and written by someone else.
+        it.remove(import.id, "B.wav").unwrap();
+        let new = it.create(import.id, "B.wav", false).unwrap();
+        assert_ne!(new.id, old.id);
+        it.open(new.id, true).unwrap();
+        it.write(new.id, 0, b"NEWNEW").unwrap();
+        it.close(new.id, false, false).unwrap();
+        // The old handle writes and closes.
+        assert!(it.write(old.id, 0, b"x").is_err());
+        it.close(old.id, false, false).unwrap();
+        assert_eq!(s.get("SD:IMPORT/B.wav"), Some(Some(b"NEWNEW".to_vec())));
+        assert_eq!(it.lookup(import.id, "B.wav").unwrap().id, new.id);
+        assert_eq!(s.open_handles(), 0);
+    }
+
+    #[test]
+    fn a_file_deleted_while_open_stays_deleted() {
+        let s = sample();
+        let it = items(&s);
+        let import = walk(&it, &["SD-Card", "IMPORT"]);
+        // mkstemp, unlink, then use it as scratch space.
+        let tmp = it.create(import.id, "tmp.bin", false).unwrap();
+        it.open(tmp.id, true).unwrap();
+        it.remove(import.id, "tmp.bin").unwrap();
+        assert_eq!(s.get("SD:IMPORT/tmp.bin"), None);
+        assert_eq!(it.write(tmp.id, 0, b"scratch").unwrap(), 7);
+        it.set_size(tmp.id, 5).unwrap();
+        assert_eq!(it.attr(tmp.id).unwrap().size, 5);
+        let mut buf = [0u8; 16];
+        assert_eq!(it.read(tmp.id, 0, &mut buf).unwrap(), 5);
+        assert_eq!(&buf[..5], b"scrat");
+        it.close(tmp.id, false, false).unwrap();
+        assert_eq!(s.get("SD:IMPORT/tmp.bin"), None);
+        assert_eq!(it.lookup(import.id, "tmp.bin"), Err(FsError::NotFound));
+        assert_eq!(it.attr(tmp.id), Err(FsError::NotFound));
+        assert_eq!(s.open_handles(), 0);
+    }
+
+    #[test]
+    fn writes_buffered_before_a_delete_stay_readable() {
+        let s = sample();
+        let it = items(&s);
+        let import = walk(&it, &["SD-Card", "IMPORT"]);
+        let kick = it.lookup(import.id, "Kick.wav").unwrap();
+        it.open(kick.id, true).unwrap();
+        it.write(kick.id, 0, b"KICK").unwrap();
+        it.remove(import.id, "Kick.wav").unwrap();
+        let mut buf = [0u8; 16];
+        assert_eq!(it.read(kick.id, 0, &mut buf).unwrap(), 8);
+        assert_eq!(&buf[..8], b"KICK....");
+        it.close(kick.id, false, false).unwrap();
+        assert_eq!(s.get("SD:IMPORT/Kick.wav"), None);
+    }
+
+    #[test]
+    fn existing_files_renamed_to_housekeeping_names_stay_on_the_unit() {
+        let s = sample();
+        let it = items(&s);
+        let import = walk(&it, &["SD-Card", "IMPORT"]);
+        // A file that was there before the drive opened.
+        assert_eq!(
+            it.rename(import.id, "Kick.wav", import.id, "._Kick.wav", false)
+                .unwrap(),
+            "._Kick.wav"
+        );
+        assert_eq!(
+            s.get("SD:IMPORT/._Kick.wav"),
+            Some(Some(b"RIFF....".to_vec()))
+        );
+        // Made here, but not hidden: not a copying program's temporary file either.
+        let song = it.create(import.id, "song.wav", false).unwrap();
+        it.write(song.id, 0, b"song").unwrap();
+        it.rename(import.id, "song.wav", import.id, ".apdisk", false)
+            .unwrap();
+        assert_eq!(s.get("SD:IMPORT/.apdisk"), Some(Some(b"song".to_vec())));
+        // Made here and hidden, then moved: still taken off the unit when renamed.
+        let tmp = it.create(import.id, ".x.tmp", false).unwrap();
+        it.write(tmp.id, 0, b"ds").unwrap();
+        let pack = it.lookup(import.id, "pack").unwrap();
+        it.rename(import.id, ".x.tmp", pack.id, ".y.tmp", false)
+            .unwrap();
+        it.rename(pack.id, ".y.tmp", pack.id, ".DS_Store", false)
+            .unwrap();
+        assert_eq!(s.get("SD:IMPORT/pack/.DS_Store"), None);
+        assert_eq!(s.get("SD:IMPORT/pack/.y.tmp"), None);
+        assert_eq!(it.lookup(pack.id, ".DS_Store").unwrap().attr.size, 2);
+        // Made here inside a folder that is then renamed: still ours.
+        let card = it.lookup(ROOT, "SD-Card").unwrap();
+        let dir = it.create(card.id, "copying", true).unwrap();
+        let tmp = it.create(dir.id, "..DS_Store.abc", false).unwrap();
+        it.write(tmp.id, 0, b"bud1").unwrap();
+        it.rename(card.id, "copying", card.id, "copied", false)
+            .unwrap();
+        let dir = it.lookup(card.id, "copied").unwrap();
+        it.rename(dir.id, "..DS_Store.abc", dir.id, ".DS_Store", false)
+            .unwrap();
+        assert_eq!(s.get("SD:copied/.DS_Store"), None);
+        assert_eq!(s.get("SD:copied/..DS_Store.abc"), None);
+        // Deleted and made again by someone else (over the link, say): not ours any more.
+        let other = it.create(dir.id, ".other", false).unwrap();
+        it.remove(dir.id, ".other").unwrap();
+        s.nodes
+            .lock()
+            .unwrap()
+            .insert("SD:copied/.other".into(), Some(b"theirs".to_vec()));
+        it.drive().forget_cache();
+        assert_ne!(it.lookup(dir.id, ".other").unwrap().id, other.id);
+        it.rename(dir.id, ".other", dir.id, "._other", false)
+            .unwrap();
+        assert_eq!(s.get("SD:copied/._other"), Some(Some(b"theirs".to_vec())));
+        assert_eq!(s.open_handles(), 0);
+    }
+
+    #[test]
+    fn replacing_an_open_file_with_a_housekeeping_file_leaves_no_stale_save() {
+        let s = sample();
+        let it = items(&s);
+        let import = walk(&it, &["SD-Card", "IMPORT"]);
+        let kick = it.lookup(import.id, "Kick.wav").unwrap();
+        it.open(kick.id, true).unwrap();
+        it.write(kick.id, 0, b"STALE").unwrap();
+        let ds = it.create(import.id, "._x", false).unwrap();
+        it.write(ds.id, 0, b"fresh").unwrap();
+        it.rename(import.id, "._x", import.id, "Kick.wav", true)
+            .unwrap();
+        assert_eq!(s.get("SD:IMPORT/Kick.wav"), Some(Some(b"fresh".to_vec())));
+        it.close(kick.id, false, false).unwrap();
+        assert_eq!(s.get("SD:IMPORT/Kick.wav"), Some(Some(b"fresh".to_vec())));
+        assert_eq!(it.lookup(import.id, "kick.wav").unwrap().id, ds.id);
+    }
+
+    #[test]
+    fn finds_decomposed_names_from_precomposed_ones() {
+        // "Café.wav" with a decomposed é, as a Mac may write it to a card.
+        let nfd = "Cafe\u{301}.wav";
+        let s = Arc::new(MemStore::new(&[
+            ("SD:IMPORT", None),
+            (&format!("SD:IMPORT/{nfd}"), Some(b"cafe")),
+            ("SD:IMPORT/\u{c9}t\u{e9}.wav", Some(b"upper")),
+            ("SD:IMPORT/\u{e9}t\u{e9}.wav", Some(b"lower")),
+        ]));
+        let it = items(&s);
+        let import = walk(&it, &["SD-Card", "IMPORT"]);
+        let found = it.lookup(import.id, "Caf\u{e9}.WAV").unwrap();
+        assert_eq!(found.attr.name, nfd);
+        assert_eq!(it.lookup(import.id, nfd).unwrap().id, found.id);
+        assert!(it.list(import.id).unwrap().iter().any(|i| i.id == found.id));
+        let mut buf = [0u8; 8];
+        assert_eq!(it.read(found.id, 0, &mut buf).unwrap(), 4);
+        // Only ASCII letters match without regard to case, as on the drive.
+        let upper = it.lookup(import.id, "\u{c9}t\u{e9}.wav").unwrap();
+        let lower = it.lookup(import.id, "\u{e9}t\u{e9}.wav").unwrap();
+        assert_ne!(upper.id, lower.id);
+        assert_eq!(upper.attr.size, 5);
+        assert_eq!(lower.attr.size, 5);
+        assert_eq!(it.read(lower.id, 0, &mut buf).unwrap(), 5);
+        assert_eq!(&buf[..5], b"lower");
+        // Deleting by the precomposed name deletes the decomposed file.
+        it.remove(import.id, "Caf\u{e9}.wav").unwrap();
+        assert_eq!(s.get(&format!("SD:IMPORT/{nfd}")), None);
     }
 
     #[test]

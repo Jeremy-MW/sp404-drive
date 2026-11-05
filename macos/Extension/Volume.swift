@@ -5,7 +5,8 @@ import SP404Core
 func posix(_ code: Int32) -> any Error { fs_errorForPOSIXError(code) }
 
 /// Names go to the core precomposed (NFC), as Windows passes them; some macOS programs
-/// pass decomposed names. (Not yet tested with non-ASCII names on the unit.)
+/// pass decomposed names. The core finds a name stored decomposed on the card from its
+/// precomposed form (tested on the unit).
 func coreName(_ name: FSFileName) -> String? {
     name.string?.precomposedStringWithCanonicalMapping
 }
@@ -49,9 +50,12 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
     static let uuid = UUID(uuidString: "5B4F0404-2021-4E55-8D2B-53503430344D")!
 
     /// Fixed when the volume is activated (where the mount's options arrive), before any
-    /// other call.
-    private(set) var readOnly: Bool
-    private(set) var time = timespec()
+    /// other call; kept under `stateLock`, since every call reads them.
+    private let stateLock = NSLock()
+    private var _readOnly: Bool
+    private var _time = timespec()
+    var readOnly: Bool { stateLock.withLock { _readOnly } }
+    var time: timespec { stateLock.withLock { _time } }
     let root: Item
     private weak var fileSystem: SP404FileSystem?
     /// From the resource's URL (see `MountSettings`).
@@ -74,7 +78,7 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
     init(fileSystem: SP404FileSystem, settings: MountSettings, readOnly: Bool) {
         self.fileSystem = fileSystem
         self.settings = settings
-        self.readOnly = readOnly
+        _readOnly = readOnly
         driveLock = .allocate(capacity: 1)
         pthread_rwlock_init(driveLock, nil)
         root = Item(id: UInt64(SP404_ROOT), isDir: true, parent: FSItem.Identifier.parentOfRoot.rawValue)
@@ -117,14 +121,21 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
             log.error("could not open the drive: \(reason, privacy: .public)")
             return posix(openErrorCode(reason))
         }
+        // A new drive numbers its items afresh, so items from an earlier one (if FSKit
+        // activates the volume again after a deactivate) must not be handed out for them.
+        itemsLock.lock()
         pthread_rwlock_wrlock(driveLock)
         let old = drive
         drive = d
         let oldWatch = self.watch
         self.watch = context
-        self.readOnly = readOnly
-        time = timespec(tv_sec: Int(sp_drive_time(d)), tv_nsec: 0)
+        stateLock.withLock {
+            _readOnly = readOnly
+            _time = timespec(tv_sec: Int(sp_drive_time(d)), tv_nsec: 0)
+        }
+        items = [root.id: root]
         pthread_rwlock_unlock(driveLock)
+        itemsLock.unlock()
         if let old {
             log.error("opened twice; closing the first drive")
             sp_drive_close(old)
@@ -137,7 +148,7 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
     /// and FSKit is asked to mount read-only, so the kernel refuses them first.
     private func setReadOnly(_ readOnly: Bool) {
         pthread_rwlock_wrlock(driveLock)
-        self.readOnly = readOnly
+        stateLock.withLock { _readOnly = readOnly }
         if let d = drive {
             sp_drive_set_read_only(d, readOnly)
         }
@@ -356,9 +367,10 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
         guard let item = item as? Item else { return replyHandler(nil) }
         if item.id != root.id {
             itemsLock.withLock {
-                if items[item.id] === item {
-                    items[item.id] = nil
-                }
+                // Only the current object for its number: one left from an earlier drive
+                // (see openDrive) would reclaim an unrelated item.
+                guard items[item.id] === item else { return }
+                items[item.id] = nil
                 _ = withDrive { d in
                     sp_reclaim(d, item.id)
                     return 0

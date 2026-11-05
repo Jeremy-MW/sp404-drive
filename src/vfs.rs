@@ -94,6 +94,11 @@ pub enum FsError {
 
 pub type FsResult<T> = Result<T, FsError>;
 
+/// Reading a file deleted (or replaced) while open, whose contents weren't in memory.
+fn gone_error() -> FsError {
+    FsError::Io("the file was deleted while open".into())
+}
+
 /// A path on the drive: the root, one of the volume folders, or something inside one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VPath {
@@ -272,6 +277,10 @@ struct FileState {
     buffer: Option<Vec<u8>>,
     /// The buffer differs from the device.
     dirty: bool,
+    /// Deleted, or replaced by a rename, while open. Its path now names nothing or another
+    /// file, so it is never saved or read from the device again: what it holds in memory
+    /// stays readable and writable until it's let go, then is thrown away.
+    gone: bool,
 }
 
 impl OpenFile {
@@ -299,7 +308,9 @@ impl OpenFile {
 /// Key of a file in use. The drive path, not the device path: the root and `Internal`
 /// share the device path `""`.
 fn file_key(path: &VPath) -> String {
-    path.to_string().to_lowercase()
+    // ASCII only, as names are matched (`resolve`): names that differ in other letters'
+    // case are different files.
+    path.to_string().to_ascii_lowercase()
 }
 
 struct CachedDir {
@@ -412,7 +423,7 @@ impl Drive {
     // ---- directory listings ------------------------------------------------------------
 
     fn cached_listing(&self, dir: &VPath) -> FsResult<Vec<Attr>> {
-        let key = dir.device_path().to_lowercase();
+        let key = dir.device_path().to_ascii_lowercase();
         if let Some(c) = self.dirs.lock().unwrap().get(&key)
             && c.at.elapsed() < self.opts.cache_ttl
         {
@@ -444,7 +455,7 @@ impl Drive {
 
     /// Update a cached listing in place after a change made through the drive.
     fn cache_put(&self, dir: &VPath, attr: Attr) {
-        let key = dir.device_path().to_lowercase();
+        let key = dir.device_path().to_ascii_lowercase();
         if let Some(c) = self.dirs.lock().unwrap().get_mut(&key) {
             c.entries
                 .retain(|e| !e.name.eq_ignore_ascii_case(&attr.name));
@@ -453,7 +464,7 @@ impl Drive {
     }
 
     fn cache_remove(&self, dir: &VPath, name: &str) {
-        let key = dir.device_path().to_lowercase();
+        let key = dir.device_path().to_ascii_lowercase();
         if let Some(c) = self.dirs.lock().unwrap().get_mut(&key) {
             c.entries.retain(|e| !e.name.eq_ignore_ascii_case(name));
         }
@@ -461,7 +472,7 @@ impl Drive {
 
     /// Forget a directory and everything cached below it.
     fn cache_forget_tree(&self, dir: &VPath) {
-        let key = dir.device_path().to_lowercase();
+        let key = dir.device_path().to_ascii_lowercase();
         let below = format!("{key}/");
         self.dirs
             .lock()
@@ -536,6 +547,7 @@ impl Drive {
                 size: attr.size,
                 buffer: None,
                 dirty: false,
+                gone: false,
             }),
         });
         files.insert(key, Arc::downgrade(&inner));
@@ -697,6 +709,9 @@ impl Drive {
                 buf[..n].copy_from_slice(&data[start..start + n]);
                 return Ok(n);
             }
+            if state.gone {
+                return Err(gone_error());
+            }
             state.size
         };
         if offset >= size || buf.is_empty() {
@@ -715,6 +730,9 @@ impl Drive {
     fn load(&self, file: &OpenFile, state: &mut FileState) -> FsResult<()> {
         if state.buffer.is_some() {
             return Ok(());
+        }
+        if state.gone {
+            return Err(gone_error());
         }
         let mut data = Vec::new();
         if state.size > 0 {
@@ -796,6 +814,13 @@ impl Drive {
     /// Upload a file's pending changes.
     pub fn flush(&self, file: &OpenFile) -> FsResult<()> {
         let mut state = file.inner.state.lock().unwrap();
+        if state.gone {
+            if state.dirty {
+                log::debug!("{}: deleted while open; not saving it", file.path());
+            }
+            state.dirty = false;
+            return Ok(());
+        }
         if !state.dirty {
             return Ok(());
         }
@@ -866,12 +891,8 @@ impl Drive {
         result.map_err(|e| self.err(e))?;
         log::info!("deleted {path}");
         self.files.lock().unwrap().remove(&file_key(&path));
-        {
-            // Nothing left to upload.
-            let mut state = file.inner.state.lock().unwrap();
-            state.dirty = false;
-            state.buffer = None;
-        }
+        // Nothing left to upload, from this handle or any other still open on it.
+        Self::mark_gone(&file.inner);
         if let Some(parent) = path.parent() {
             self.cache_remove(&parent, path.name());
         }
@@ -908,6 +929,12 @@ impl Drive {
                     self.store
                         .unlink(&to.device_path())
                         .map_err(|e| self.err(e))?;
+                    // A handle still open on the replaced file must not save it over the
+                    // file renamed into its place.
+                    let replaced = self.files.lock().unwrap().remove(&file_key(to));
+                    if let Some(inner) = replaced.and_then(|w| w.upgrade()) {
+                        Self::mark_gone(&inner);
+                    }
                     self.cache_remove(&to_parent, to.name());
                 }
                 Err(FsError::NotFound) => {}
@@ -931,6 +958,18 @@ impl Drive {
         self.cache_put(&to_parent, attr);
         self.move_files(&from, to);
         Ok(())
+    }
+
+    /// `inner` was deleted or replaced while open (see [`FileState::gone`]).
+    fn mark_gone(inner: &FileInner) {
+        let mut state = inner.state.lock().unwrap();
+        state.gone = true;
+        state.dirty = false;
+        // What was written stays readable through the handles still open; an empty file
+        // has nothing to fetch.
+        if state.buffer.is_none() && state.size == 0 {
+            state.buffer = Some(Vec::new());
+        }
     }
 
     /// After a rename, point the file (and, for a folder, everything open inside it) at
@@ -991,6 +1030,12 @@ impl Drive {
         // Pooled read handles are dropped, not closed: the device closes them itself once
         // the session lapses, and each close would only extend it.
         self.pool.lock().unwrap().handles.clear();
+        self.goodbye();
+    }
+
+    /// Wait out the device's session before the port closes (part of [`Drive::shutdown`];
+    /// on its own when that failed).
+    pub fn goodbye(&self) {
         if !self.is_disconnected() {
             self.store.goodbye();
         }
@@ -1282,6 +1327,36 @@ mod tests {
         );
         d.rename(&g, &p("\\SD-Card\\kick2.wav"), true).unwrap();
         assert_eq!(s.get("SD:kick2.wav"), Some(Some(vec![])));
+    }
+
+    #[test]
+    fn files_deleted_or_replaced_while_open_are_never_saved() {
+        let s = sample();
+        let d = drive(&s);
+        // Replaced by a rename while it has unsaved writes.
+        let b = d.create(&p("\\SD-Card\\B.wav"), false).unwrap();
+        d.write(&b, Some(0), b"stale", false).unwrap();
+        let a = d.open(&p("\\SD-Card\\IMPORT\\kick.wav")).unwrap();
+        d.rename(&a, &p("\\SD-Card\\B.wav"), true).unwrap();
+        d.release(a);
+        d.write(&b, None, b"!", false).unwrap();
+        d.release(b);
+        assert_eq!(s.get("SD:B.wav"), Some(Some(b"RIFF....".to_vec())));
+        // Deleted while open, then written and made again.
+        let f = d.open(&p("\\SD-Card\\B.wav")).unwrap();
+        let other = d.open(&p("\\SD-Card\\B.wav")).unwrap();
+        d.delete(&other).unwrap();
+        d.release(other);
+        let new = d.create(&p("\\SD-Card\\B.wav"), false).unwrap();
+        d.write(&new, Some(0), b"new", false).unwrap();
+        d.release(new);
+        let mut buf = [0u8; 8];
+        assert!(matches!(d.read(&f, 0, &mut buf), Err(FsError::Io(_))));
+        assert!(d.write(&f, Some(0), b"x", false).is_err());
+        d.release(f);
+        assert_eq!(s.get("SD:B.wav"), Some(Some(b"new".to_vec())));
+        d.shutdown();
+        assert_eq!(s.get("SD:B.wav"), Some(Some(b"new".to_vec())));
     }
 
     #[test]
