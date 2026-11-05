@@ -288,6 +288,7 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
     }
 
     func synchronize(flags: FSSyncFlags, replyHandler: @escaping ((any Error)?) -> Void) {
+        log.debug("synchronize: flags \(flags.rawValue)")
         if readOnly { return replyHandler(nil) }
         let e = withDrive { sp_sync($0) }
         replyHandler(e == 0 || e == ENXIO ? nil : posix(e))
@@ -315,6 +316,7 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
         var consumed: FSItem.Attribute = []
         if newAttributes.isValid(.size) {
             if !item.isDir {
+                log.debug("set size: item \(item.id) size \(newAttributes.size)")
                 let e = withDrive { sp_set_size($0, item.id, newAttributes.size) }
                 if e != 0 { return replyHandler(nil, posix(e)) }
             }
@@ -498,11 +500,15 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
     // MARK: Open and close
 
     /// FSKit opens an item with the modes wanted and closes it keeping the modes still in
-    /// use; the core uploads a written file when the last writer closes it.
+    /// use; the core uploads a written file when the last writer closes it. Measured on
+    /// macOS 26: FSKit passes each write on before the close, the program's close(2) waits
+    /// for closeItem, and an error given here is what close(2) returns (`cp` reports it).
+    /// fsync, F_FULLFSYNC and sync(8) never reach the volume, so closing is what saves.
     func openItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler: @escaping ((any Error)?) -> Void) {
         guard let item = item as? Item else { return replyHandler(posix(EINVAL)) }
         if item.isDir { return replyHandler(nil) }
         let write = modes.contains(.write)
+        log.debug("open: item \(item.id) modes \(modes.rawValue)")
         if write && readOnly { return replyHandler(posix(EROFS)) }
         let e = withDrive { sp_open($0, item.id, write) }
         replyHandler(e == 0 ? nil : posix(e))
@@ -511,6 +517,7 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
     func closeItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler: @escaping ((any Error)?) -> Void) {
         guard let item = item as? Item else { return replyHandler(posix(EINVAL)) }
         if item.isDir { return replyHandler(nil) }
+        log.debug("close: item \(item.id) keeping modes \(modes.rawValue)")
         let e = withDrive { sp_close($0, item.id, modes.contains(.read), modes.contains(.write)) }
         if e != 0 && e != ENXIO {
             log.error("closing item \(item.id): saving it failed, errno \(e)")
@@ -553,6 +560,7 @@ final class Volume: FSVolume, FSVolume.Operations, FSVolume.PathConfOperations,
         if item.isDir { return replyHandler(0, posix(EISDIR)) }
         if readOnly { return replyHandler(0, posix(EROFS)) }
         if offset < 0 { return replyHandler(0, posix(EINVAL)) }
+        log.debug("write: item \(item.id) offset \(offset) length \(contents.count)")
         var total = 0
         var e: Int32 = 0
         contents.withUnsafeBytes { raw in

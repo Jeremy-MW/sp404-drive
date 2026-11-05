@@ -189,8 +189,9 @@ src/winfs.rs   Windows front end: WinFsp callbacks -> vfs::Drive.
 src/host.rs    The background host on Windows: serving the drive, and how sp404drive
                starts it (through Explorer, reporting over a named pipe) and stops it
                (a named event and mutex per mount point).
-src/items.rs   Numbered items over vfs::Drive, for FSKit: item numbers, open modes, and
-               the upload when the last writer closes. Unit-tested.
+src/items.rs   Numbered items over vfs::Drive, for FSKit: item numbers, open modes, the
+               upload when the last writer closes, and Mac housekeeping files kept in
+               memory. Unit-tested.
 src/main.rs    sp404drive.exe, the command line.
 src/bin/sp404drive-host.rs
                sp404drive-host.exe, the windowless background process.
@@ -199,6 +200,8 @@ ffi/           The core as a static library with a C interface (crate sp404-ffi)
 macos/         The Mac app and its FSKit extension (Swift), as an XcodeGen project:
                Extension/FileSystem.swift (loading, options), Volume.swift (every FSKit
                call -> sp404.h), Item.swift; build-rust.sh builds ffi/ for Xcode.
+examples/      Checks run against the unit with the drive unmounted: link_check (the
+               link), idle_handles (issue #1), list_tree (what is really in a folder).
 ```
 
 On macOS the serial link works: `sp404drive ports` finds the unit, and
@@ -258,7 +261,7 @@ on in System Settings (see above), then:
 
 ```
 mount -F -t sp404 -r sp404://unit ~/SP404      # read-only (or: -o rdonly)
-mount -F -t sp404 sp404://unit ~/SP404         # read-write (writes: not tested yet)
+mount -F -t sp404 sp404://unit ~/SP404         # read-write
 umount ~/SP404
 ```
 
@@ -282,7 +285,13 @@ How the volume works:
   find their place again if the folder changes between calls.
 - **Open, close and writing.** FSKit's open and close calls carry modes (read, write, and
   the modes kept on close), which the core turns into "upload when the last writer closes",
-  as on Windows.
+  as on Windows. FSKit passes each write on at once, and the program's `close()` waits until
+  the file is on the unit. Unlike on Windows, **a failed upload is reported to the program**:
+  the error FSKit gets from the close is what `close()` returns, so `cp` says
+  "Input/output error" and exits with 1 (tested by making the close fail on purpose, in a
+  test build; a real upload failure needs the unit to go away mid-write, not tested).
+  `fsync`, `F_FULLFSYNC` and `sync` never reach the volume (measured), so they don't save
+  anything: closing the file, or unmounting, does.
 - **Names** are case-insensitive and case-preserving, and are passed to the core
   precomposed (NFC).
 - **Times, permissions, owners, flags.** Every item shows the mount time. Setting times,
@@ -290,16 +299,30 @@ How the volume works:
   only a file's size can be set.
 - **Extended attributes** are kept in memory, per item, and never reach the unit. macOS
   sets them on most files it copies (Finder info, quarantine); a volume that refuses them
-  makes macOS write `._` files beside each file instead, which the core refuses anyway (it
-  won't create `._*`, `.DS_Store` or the other Mac housekeeping names). They are lost when
-  FSKit lets an item go, and on unmount. Whether this keeps `._` files away in a Finder copy
-  is not tested yet.
+  makes macOS write `._` files beside each file instead. They are lost when FSKit lets an
+  item go, and on unmount. With them, `cp`, `cp -p`, `cp -Rp` and `ditto` of files with
+  extended attributes left no `._` file on the card (checked over the link with
+  `list_tree`). Finder itself is not tested yet.
+- **Mac housekeeping files** (`._*`, `.DS_Store`, `.Trashes`, `.fseventsd`,
+  `.Spotlight-V100`, `.TemporaryItems`, `.apdisk`, `.VolumeIcon.icns`) are never created on
+  the unit. A new file with one of these names is kept in memory instead, until it's
+  deleted or the drive is unmounted, so the program writing it carries on: copying a folder
+  that holds a `.DS_Store` or a `._` file with `cp -R` or `ditto` failed ("Permission
+  denied", exit 1) while the drive refused them, and rsync gave up on the whole folder. Such
+  a file isn't listed, since it isn't on the unit, but can be opened, read, written,
+  renamed and deleted by name (so `diff -r` against the source reports it as missing). A
+  file renamed to such a name (rsync's `..DS_Store.XXXX` temporary file) is taken off the
+  unit and kept in memory; renamed back to an ordinary name, it goes to the unit. A folder
+  that holds only such files counts as empty. Folders with these names, and such files in
+  the drive's root (beside `Internal` and `SD-Card`), are refused. Ones already on the card (from a card reader) are ordinary files.
 - **Unplugging.** The core notices at once (the serial read ends), logs it and fails every
   request from then on; the extension also sets FSKit's container state to "not ready".
   Whether FSKit then unmounts the volume by itself is not tested; `umount` ends it.
 - **Logging.** The extension's and the core's lines go to the unified log at "notice" level
   or above, so they're kept:
-  `log show --last 10m --predicate 'subsystem == "com.polecatplugins.sp404drive"'`.
+  `log show --last 10m --predicate 'subsystem == "com.polecatplugins.sp404drive"'`. Every
+  open, close, write and size change is also logged at "debug" level, which is only seen
+  live: `log stream --level debug --predicate '...'`.
 
 Tested on 2026-11-05 on the unit (macOS 26, Apple Silicon, Release build, mounted
 read-only):
@@ -316,18 +339,43 @@ read-only):
 | Mount while another program holds the port | "Resource busy"; the next mount works |
 | `umount` | 3.0 s just after use (waiting out the session), 0.0 s when idle for 3 s; the port is free afterwards (`lsof`) |
 
-Not tested yet: writing (read-write mounts), Finder, Spotlight and Quick Look, unplugging
-while mounted, a Developer ID export of this version.
+Writing, tested on 2026-11-05 on the unit (Release build, mounted read-write), only inside
+a test folder on the SD card, which was deleted afterwards. Nothing under `Internal` was
+changed (the log shows every change, all in the test folder). Contents were checked after
+unmounting and mounting again, against the source files:
+
+| Test | Result |
+|---|---|
+| Mount read-write | 0.5 s |
+| `mkdir`; `cp` of 300 KB, 1 MB, 4 MB; `ditto` of 1 MB, 1.5 MB, 4 MB | all identical after remounting; one upload per file, at close |
+| Write speed (`cp` of 32 MiB, twice) | 8.3 s and 9.1 s: 4.0 and 3.7 MB/s; a 4 MiB upload took 0.89-1.02 s |
+| Overwrite longer with shorter, shorter with longer; `>` redirect over a file | correct sizes and contents |
+| Append (`>>` three times; `cat >>` 1000 bytes onto 300 KB) | correct |
+| `truncate` shorter and longer on a closed file | correct; uploaded at once |
+| Rename in a folder, case-only rename (file and folder), move between folders, move a folder | correct |
+| Rename a file while it's being written, then write more | ends up under the new name with all of it |
+| A writer closes while a reader keeps the file open | uploaded at the writer's close |
+| `rm`; `rmdir` of an empty folder; `rm -r` | correct |
+| `rmdir` of a folder with files | refused: "Directory not empty" |
+| `rename()` from `SD-Card` into `Internal` (raw `rename(2)`, not `mv`) | "Cross-device link" (`EXDEV`), before anything is sent; `Internal` unchanged. `mv` then copies and deletes, so it wasn't run |
+| `cp -p`, `cp`, `ditto`, `cp -Rp` of files with extended attributes | attributes kept while mounted, gone after remounting; no `._` file on the card |
+| `touch .DS_Store`, `touch ._x` | succeed; kept in memory, not on the card |
+| `cp -R`, `cp -Rp`, `ditto`, `rsync -a` (twice) of a folder holding `.DS_Store` and `._a.bin` | all succeed (before the change: `cp` and `ditto` exit 1, rsync gave up); the card gets only `a.bin`, checked over the link with `list_tree` |
+| A close made to fail on purpose (test build only) | `close()` returns EIO; `cp` prints "Input/output error" and exits 1 |
+| `fsync`, `F_FULLFSYNC`, `sync` on a file being written | nothing reaches the volume; the file is uploaded at close |
+| Issue #1: two files open, 64 KB reads alternating with 3 s pauses, so the unit closes its handles between reads (`F_NOCACHE` and fresh offsets after a fresh mount, to bypass the page cache) | 70 reads in six runs, all correct; in the two runs whose timings were printed, every read took about 20 ms, so it reached the unit |
+
+Not tested yet: Finder, Spotlight and Quick Look, unplugging while mounted (and so a real
+upload failure), mounting with no unit attached, non-ASCII names on the unit, a Developer
+ID export of this version.
 
 Still to do for the Mac version:
 
-1. testing writes on the unit (create, write, rename, delete, inside a test folder), and
-   whether Finder copies leave `._` files;
+1. testing Finder copies and moves, and Spotlight and Quick Look (they shouldn't read whole
+   files);
 2. mounting and unmounting from `sp404drive` (`mount -F`, `umount`) or from the app;
-3. checking that Spotlight and Quick Look don't read whole files, and keeping `.DS_Store`
-   off the unit;
-4. unplugging while mounted, and what FSKit does then;
-5. an Intel or universal build, and a notarised release.
+3. unplugging while mounted, and what FSKit does then;
+4. an Intel or universal build, and a notarised release.
 
 ## Contributing
 
