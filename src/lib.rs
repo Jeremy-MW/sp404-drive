@@ -8,11 +8,13 @@
 //! - [`vfs`]: the filesystem itself, independent of the OS.
 //! - `host`: the background process that serves the drive on Windows, and how
 //!   `sp404drive` starts and stops it.
-//! - `winfs`: the Windows front end (WinFsp). A macOS front end would sit beside it and
-//!   drive the same [`vfs::Drive`] through FUSE.
+//! - `winfs`: the Windows front end (WinFsp).
+//! - [`items`]: numbered items over [`vfs::Drive`], for the macOS front end (an FSKit
+//!   extension in `macos/`, through the C interface in `ffi/`).
 
 #[cfg(windows)]
 pub mod host;
+pub mod items;
 pub mod link;
 pub mod store;
 pub mod vfs;

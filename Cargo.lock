@@ -595,6 +595,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sp404-ffi"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "sp404-drive",
+]
+
+[[package]]
 name = "sp404-proto"
 version = "0.7.3"
 source = "git+https://github.com/TuscanPL/SparkyMK2?rev=3007b5d4a796ecf752c7866c1cead87d31c5e416#3007b5d4a796ecf752c7866c1cead87d31c5e416"
