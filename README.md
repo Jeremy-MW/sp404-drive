@@ -157,6 +157,16 @@ Everything except `winfs.rs` and `link/windows.rs` builds on macOS. A Mac versio
 4. [macFUSE](https://osxfuse.github.io) or [FUSE-T](https://www.fuse-t.org) installed on
    the Mac. FUSE-T needs no kernel extension.
 
+## Contributing
+
+Commits use a GitHub noreply address
+(`<id>+<login>@users.noreply.github.com`), not a personal email. A `commit-msg` hook in
+`.githooks/` checks this; switch it on once per clone:
+
+```
+git config core.hooksPath .githooks
+```
+
 ## What comes from SparkyMK2
 
 We use SparkyMK2 ("Sparky") in four ways: one crate is compiled in, one file was ported, the licence was copied, and some docs and code served only as reference. Everything comes from commit `3007b5d`.

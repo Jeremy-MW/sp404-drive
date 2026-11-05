@@ -1,0 +1,24 @@
+#!/bin/sh
+# Commit rules for this repo:
+# - the author and committer use a GitHub noreply address, never a personal one;
+# - the message has no "Claude-Session:" line.
+# Enable once per clone:  git config core.hooksPath .githooks
+
+fail=0
+for who in AUTHOR COMMITTER; do
+    email=$(git var "GIT_${who}_IDENT" | sed -n 's/.*<\(.*\)>.*/\1/p')
+    case "$email" in
+        *@users.noreply.github.com) ;;
+        *)
+            role=$(echo "$who" | tr 'A-Z' 'a-z')
+            echo "commit-msg: the $role email is <$email>, not a GitHub noreply address." >&2
+            echo "  Set it with: git config user.email <id>+<login>@users.noreply.github.com" >&2
+            fail=1
+            ;;
+    esac
+done
+if grep -q '^Claude-Session:' "$1"; then
+    echo "commit-msg: remove the \"Claude-Session:\" line from the message." >&2
+    fail=1
+fi
+exit $fail
