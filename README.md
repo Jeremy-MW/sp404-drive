@@ -204,21 +204,46 @@ support device files on macOS); unplugging the unit ends that wait at once, as o
 The port is found by USB id (0582:02E7) through the `serialport` crate's port listing; its
 own port code isn't used.
 
-Still to do for a Mac version:
+The Mac version will be an FSKit file system: Apple's own framework, with no third-party
+software to install (macFUSE or FUSE-T would be a second install, and macFUSE also needs a
+system extension approved). It ships as a signed, notarised `SP-404 Drive.app` that carries
+the extension; the user switches the extension on once, in System Settings > General >
+Login Items & Extensions > Extensions, By Category > File System Extensions. It needs
+macOS 26 or later.
 
-1. a `src/fuse.rs` that implements `fuser::Filesystem` by calling the same `vfs::Drive`
-   methods `winfs.rs` uses (`lookup`, `list`, `open`, `create`, `read`, `write`,
-   `set_size`, `flush`, `check_delete`/`delete`, `rename`, `release`, `space`). FUSE works
-   with inode numbers, so that file also keeps an inode-to-`VPath` table. FUSE deletes and
-   renames by name, without an open file, so those open the file first (or `vfs` gains
-   path-based versions);
-2. `serve`, `listen_for_unmount` and `unmount` in `main.rs` for macOS. Unmounting is
-   `umount /Volumes/SP-404MKII` or Finder's Eject, and the FUSE session then ends by
-   itself;
-3. keeping Finder's `._*` and `.DS_Store` files off the unit (`noappledouble`,
-   `noapplexattr`), and checking that Spotlight and Quick Look don't read whole files;
-4. [macFUSE](https://osxfuse.github.io) or [FUSE-T](https://www.fuse-t.org) installed on
-   the Mac. FUSE-T needs no kernel extension.
+`macos/` holds the Xcode project (generated from `project.yml` with
+[XcodeGen](https://github.com/yonaskolb/XcodeGen)). For now its extension is a check, not
+the drive: a read-only volume with one file, `status.txt`, saying whether the sandboxed
+extension could open the unit's serial port. On 2026-11-05 it showed that:
+
+- the FSKit entitlement (`com.apple.developer.fskit.fsmodule`) is granted in Developer ID
+  provisioning profiles;
+- a volume with no disk behind it works (`FSSupportsGenericURLResources`, URL scheme
+  `sp404`);
+- an ordinary user can mount it, without root: `mount -F -t sp404 sp404://unit <folder>`,
+  and unmount it with `umount`;
+- the sandboxed extension can open `/dev/cu.usbmodem*` (`com.apple.security.device.serial`);
+- the app exports for Developer ID, notarises, and passes Gatekeeper.
+
+```
+cd macos
+xcodegen generate
+xcodebuild -project SP404Drive.xcodeproj -scheme SP404Drive -allowProvisioningUpdates \
+  -allowProvisioningDeviceRegistration build
+```
+
+Still to do for the Mac version:
+
+1. the Rust core (`vfs`, `store`, `link`) built as a static library with a C interface: the
+   calls `winfs.rs` makes (`lookup`, `list`, `open`, `create`, `read`, `write`, `set_size`,
+   `flush`, `check_delete`/`delete`, `rename`, `release`, `space`);
+2. the extension's volume calling it: `Internal` and `SD-Card`, with FSKit's open and close
+   calls driving the upload of a written file, as on Windows;
+3. Xcode building the Rust library as part of the app;
+4. mounting and unmounting from `sp404drive` (`mount -F`, `umount`) or from the app;
+5. keeping Finder's `._*` and `.DS_Store` files off the unit, and checking that Spotlight and
+   Quick Look don't read whole files;
+6. testing on the unit as on Windows, and a notarised release.
 
 ## Contributing
 

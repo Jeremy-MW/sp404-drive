@@ -1,0 +1,65 @@
+# Xcode project for the macOS app and its FSKit extension. Generate with `xcodegen`.
+name: SP404Drive
+options:
+  bundleIdPrefix: com.polecatplugins
+  deploymentTarget:
+    macOS: "26.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: AB4959S2LR
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+targets:
+  SP404Drive:
+    type: application
+    platform: macOS
+    sources: [App]
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: SP-404 Drive
+        LSUIElement: true
+        LSMinimumSystemVersion: "26.0"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.polecatplugins.sp404drive
+        PRODUCT_NAME: SP-404 Drive
+    dependencies:
+      - target: SP404FS
+        embed: true
+        codeSign: true
+  SP404FS:
+    type: extensionkit-extension
+    platform: macOS
+    sources: [Extension]
+    entitlements:
+      path: Extension/SP404FS.entitlements
+      properties:
+        com.apple.developer.fskit.fsmodule: true
+        com.apple.security.app-sandbox: true
+        com.apple.security.device.serial: true
+    info:
+      path: Extension/Info.plist
+      properties:
+        CFBundleDisplayName: SP-404MKII
+        LSMinimumSystemVersion: "26.0"
+        EXAppExtensionAttributes:
+          EXExtensionPointIdentifier: com.apple.fskit.fsmodule
+          FSShortName: sp404
+          FSPersonalities:
+            SP404:
+              FSName: SP-404MKII
+          FSSupportedSchemes: [sp404]
+          FSSupportsGenericURLResources: true
+          FSSupportsBlockResources: false
+          FSSupportsPathURLs: false
+          FSRequiresSecurityScopedPathURLResources: false
+          FSMediaTypes: {}
+          FSActivateOptionSyntax:
+            shortOptions: "o:"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.polecatplugins.sp404drive.fsmodule
+        PRODUCT_NAME: SP404FS
