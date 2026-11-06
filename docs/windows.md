@@ -101,7 +101,9 @@ That's how `ports` finds the unit.
   (`Local\sp404drive-read-only-S`) while it's mounted.
 - **Settings** are under `HKCU\Software\Polecat Plugins\SP-404 Drive`; Open at Sign-in is a
   value in the user's `Run` key (switching it on in the menu also clears a switch-off made
-  in Settings > Apps > Startup).
+  in Settings > Apps > Startup). Uninstalling removes the `Run` value and the record that
+  the first-run message was shown (`Welcomed`), so a reinstall shows the message again and
+  offers Open at Sign-in; the other settings stay.
 - **Sent messages re-enter the window procedure** while the thread waits in a shell call
   (`Shell_NotifyIconW` and the like). With the state in a `RefCell`, a device change
   arriving then would be dropped, or panic. So handlers of sent messages only post a

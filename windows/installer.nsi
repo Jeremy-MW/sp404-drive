@@ -242,6 +242,9 @@ Section "Uninstall"
   ; Open at Sign-in, for the user running the uninstaller.
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${ProductName}"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "${ProductName}"
+  ; With Open at Sign-in gone, a reinstall should show the first-run message again, which
+  ; offers it. The other settings stay.
+  DeleteRegValue HKCU "Software\Polecat Plugins\SP-404 Drive" "Welcomed"
 
   Delete "$SMPROGRAMS\${ProductName}.lnk"
   Delete "$INSTDIR\sp404drive.exe"
