@@ -129,7 +129,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.mountIfWaiting()
             }
             do {
-                _ = try await Drive.mount(port: port, readOnly: readOnly)
+                do {
+                    _ = try await Drive.mount(port: port, readOnly: readOnly)
+                } catch let failure as Drive.Failure where failure.status == Drive.staleMountStatus {
+                    // One password prompt, then mount again; cancelled, the failure stands.
+                    guard self.clearStaleMount() else { throw failure }
+                    _ = try await Drive.mount(port: port, readOnly: readOnly)
+                }
                 self.lastProblem = nil
                 self.refresh()
                 if !automatic { self.showInFinder() }
@@ -137,7 +143,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if automatic {
                     // No alert for something nobody clicked; the menu says what happened.
                     self.lastProblem = describe(error)
-                    if self.retryLaunchMount, let port {
+                    // Not after a stale mount the user chose not to clear: that would ask again.
+                    let stale = (error as? Drive.Failure)?.status == Drive.staleMountStatus
+                    if self.retryLaunchMount, !stale, let port {
                         self.retryLaunchMount = false
                         Task {
                             try? await Task.sleep(for: .seconds(15))
@@ -198,6 +206,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert("Couldn't change Open at Login", error.localizedDescription)
         }
         refresh()
+    }
+
+    /// macOS's file system service (fskitd) can get stuck on an earlier mount and refuse
+    /// every later one: when the extension is ended while mounted (macOS did it once, as
+    /// the app was replaced) it keeps a record of that mount, and once, after a mount and
+    /// unmount just before the app was replaced, it kept a task it thought was running.
+    /// `sp404drive mount` says so with its own exit status. Restarting fskitd needs root:
+    /// `sp404drive clear-stale-mount`, behind macOS's password prompt. True when it ran.
+    private func clearStaleMount() -> Bool {
+        let script = """
+            do shell script (quoted form of "\(Drive.command)") & " clear-stale-mount " & \
+            (quoted form of "\(Drive.defaultMountPoint)") with administrator privileges \
+            with prompt "macOS's file system service is stuck on an earlier SP-404MKII mount, so \
+            the drive can't mount. SP-404 Drive can restart it."
+            """
+        NSApp.activate()
+        var error: NSDictionary?
+        NSAppleScript(source: script)?.executeAndReturnError(&error)
+        if let error {
+            // -128: cancelled in the password dialog.
+            if (error[NSAppleScript.errorNumber] as? Int) != -128 {
+                alert("Couldn't clear the earlier mount", "\(error[NSAppleScript.errorMessage] ?? error)")
+            }
+            return false
+        }
+        return true
     }
 
     @objc private func installCommand() {

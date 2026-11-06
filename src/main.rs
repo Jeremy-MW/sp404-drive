@@ -5,7 +5,8 @@ const DEFAULT_MOUNT: &str = "S:";
 // /Volumes belongs to root, and FSKit doesn't create mount points: a folder created by
 // `mount` and removed by `unmount`. Finder leaves out volumes mounted in the visible part of
 // the home folder (`~/SP-404MKII` was in neither the sidebar nor the Computer view); under
-// ~/Library it shows the volume under Locations, with an Eject button (measured, macOS 26).
+// ~/Library it can show the volume under Locations, with an Eject button, but never adds it
+// there by itself, so `mount` does (mac_cli.rs, `sidebar`; measured, macOS 26.6).
 #[cfg(not(windows))]
 const DEFAULT_MOUNT: &str = "~/Library/Application Support/SP-404 Drive/SP-404MKII";
 
@@ -53,9 +54,31 @@ enum Command {
     },
     /// List connected SP-404MKII units.
     Ports,
+    /// Run as root (sudo) when `mount` says macOS is still holding an earlier mount that
+    /// ended abruptly: clears macOS's record of it, so the folder can be mounted on again.
+    #[cfg(target_os = "macos")]
+    ClearStaleMount {
+        #[arg(default_value = DEFAULT_MOUNT)]
+        mount_point: String,
+    },
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            // As anyhow prints an error returned from main.
+            eprintln!("Error: {e:?}");
+            #[cfg(target_os = "macos")]
+            if e.downcast_ref::<platform::StaleMount>().is_some() {
+                return std::process::ExitCode::from(platform::STALE_MOUNT_STATUS);
+            }
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let log_level = match cli.verbose {
@@ -71,6 +94,8 @@ fn main() -> anyhow::Result<()> {
             cache_secs,
         } => platform::mount(&mount_point, port, read_only, cache_secs, log_level),
         Command::Unmount { mount_point } => platform::unmount(&mount_point),
+        #[cfg(target_os = "macos")]
+        Command::ClearStaleMount { mount_point } => platform::clear_stale_mount(&mount_point),
         Command::Ports => {
             let ports = platform::list_ports()?;
             if ports.is_empty() {

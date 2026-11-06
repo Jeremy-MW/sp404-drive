@@ -19,6 +19,11 @@ struct Mounted: Equatable {
 enum Drive {
     static let command = Bundle.main.bundleURL
         .appendingPathComponent("Contents/MacOS/sp404drive").path
+    /// Where `sp404drive mount` mounts by default.
+    static let defaultMountPoint = NSHomeDirectory() + "/Library/Application Support/SP-404 Drive/SP-404MKII"
+    /// `sp404drive mount`'s exit status when macOS is still holding an earlier mount that
+    /// ended abruptly (STALE_MOUNT_STATUS in mac_cli.rs).
+    static let staleMountStatus: Int32 = 3
 
     /// Every mounted SP-404MKII volume (file system type sp404).
     static func mounts() -> [Mounted] {
@@ -40,6 +45,8 @@ enum Drive {
     struct Failure: Error {
         /// What the command said, without its "Error: " prefix.
         var message: String
+        /// The command's exit status; 0 when it couldn't be run.
+        var status: Int32 = 0
     }
 
     static func mount(port: String?, readOnly: Bool) async throws(Failure) -> String {
@@ -78,7 +85,7 @@ enum Drive {
                     var message = error.trimmingCharacters(in: .whitespacesAndNewlines)
                     if message.hasPrefix("Error: ") { message.removeFirst("Error: ".count) }
                     if message.isEmpty { message = "\(tool) failed (exit status \(p.terminationStatus))" }
-                    done.resume(returning: .failure(Failure(message: message)))
+                    done.resume(returning: .failure(Failure(message: message, status: p.terminationStatus)))
                 }
             }
             do {

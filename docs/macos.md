@@ -36,8 +36,9 @@ own FSKit module needs no third-party software at all.
 - **Where it mounts.** `~/Library/Application Support/SP-404 Drive/SP-404MKII` by default.
   Finder leaves out volumes mounted in the visible part of the home folder: mounted on
   `~/SP-404MKII`, the volume was in neither Finder's sidebar nor its Computer view,
-  although it counted as browsable and wasn't `nobrowse`. Under `~/Library` it is in both,
-  as a "Remote Volume" with an Eject button. The kernel doesn't set `MNT_LOCAL` on an FSKit
+  although it counted as browsable and wasn't `nobrowse`. Under `~/Library` it is in the
+  Computer view, as a "Remote Volume" with an Eject button, and can be in the sidebar (see
+  the next point). The kernel doesn't set `MNT_LOCAL` on an FSKit
   volume without a disk, and FSKit's only mount option is read-only. (Apple's developer
   forum thread 816899 reports the same for another FSKit volume.)
 
@@ -45,7 +46,19 @@ own FSKit module needs no third-party software at all.
   |---|---|
   | `~/SP-404MKII` | in neither the sidebar nor the Computer view |
   | `/Users/Shared/SP-404MKII` | in the Computer view, as a "Remote Volume" with an Eject button |
-  | `~/Library/Application Support/SP-404 Drive/SP-404MKII` | in the sidebar under Locations, with an Eject button, and in the Computer view |
+  | `~/Library/Application Support/SP-404 Drive/SP-404MKII` | in the Computer view; in the sidebar under Locations, with an Eject button, once it's in Finder's list (below) |
+
+- **`mount` puts it in Finder's sidebar.** macOS files the volume under Recent Servers and
+  never adds it to the sidebar's list by itself: not on mounting, remounting, or restarting
+  Finder and `sharedfilelistd` with it mounted (measured on macOS 26.6, with no entry for
+  it in the list). The 1.1.0 tests that found it in the sidebar had an entry from earlier.
+  So after mounting on the default folder, `sp404drive mount` adds it to the end of
+  Locations (`LSSharedFileListInsertItemURL` on `kLSSharedFileListFavoriteVolumes`,
+  deprecated but the only way) and writes `sidebar-added` beside the mount folder. The
+  list's snapshot holds only visible items, and Finder's "Remove from Sidebar" hides an
+  item rather than deleting it, so once that file exists, a volume missing from the list
+  was removed by the user: `mount` leaves it out and says it's under Go > Computer. The
+  entry stays in the list while the drive is unmounted, so it comes back on the next mount.
 
 - **Not `/Volumes`.** It belongs to root; `mount -F` doesn't create a missing mount point
   (it says "invalid file system", exit 66, for any missing folder); and NetFS
@@ -68,7 +81,27 @@ own FSKit module needs no third-party software at all.
   program ("in use by another program, probably Roland's SP-404MKII app"); macOS not
   starting the extension (it isn't switched on, or the app isn't installed; the message
   says where to switch it on); macOS older than 26; a folder that isn't empty; `unmount`
-  while a program has a file open or a terminal is in a folder on the drive ("in use").
+  while a program has a file open or a terminal is in a folder on the drive ("in use");
+  macOS's file system service stuck on an earlier mount (next point).
+- **When fskitd is stuck on an earlier mount.** Two ways, both seen on this Mac, and both
+  refused every later mount until `fskitd` was restarted:
+  - The extension was ended while mounted (macOS sent it SIGTERM after a Launch Services
+    change; `pkill -TERM SP404FS` does the same). `fskitd` couldn't finish the unmount and
+    kept its record in `/Library/Application Support/livefsd/settings.plist`; every later
+    mount loaded and activated, then `fskitd` logged "Failed to store the mount point in
+    settings file!" (NSCocoaErrorDomain 516) and `mount -F` said "Unable to invoke task".
+    Removing the record from the file wasn't enough while `fskitd` ran on: it keeps them
+    in memory too.
+  - A task it thought was still running: "Can't start new task, previous task is
+    running", after an unmount just before the app was replaced (see "Lessons").
+  `sp404drive mount` checks the file for a record of a mount on its folder before
+  mounting (anyone can read it) and, after a failed `mount -F`, `fskitd`'s log since the
+  attempt began for either message. Then it fails with exit status 3 and says to run
+  `sudo sp404drive clear-stale-mount '<folder>'`, which removes such records, if any, and
+  restarts `fskitd` (`killall`; launchd starts it again when it's next needed). The app
+  sees status 3, runs `clear-stale-mount` behind macOS's password prompt (`do shell script
+  ... with administrator privileges`), and mounts again; cancelled, the menu says why it
+  didn't mount, and the launch retry is skipped so it doesn't ask again.
 
 `mount -F` can be used by hand:
 
@@ -217,7 +250,11 @@ a shell builtin, hence the full path.)
   extension process cleared it; four more replacements didn't repeat it. Now the extension
   gives up 10 s after a load that's never activated (it lets the port go and exits), and
   the app retries its launch mount once, 15 s after a failure. Reading `fskitd`'s log
-  lines found it; `sp404drive` only saw a failed `mount -F`.
+  lines found it; `sp404drive` only saw a failed `mount -F`. On 2026-11-06 it came twice
+  more, both times after an unmount, then replacing the app, then opening it: the
+  extension exiting didn't clear it. Once it cleared by itself within about four minutes;
+  once restarting `fskitd` cleared it at once (`clear-stale-mount`, through the app). The
+  app's 15 s retry didn't run that day (not yet understood).
 - **A busy unmount can be transient.** Once, straight after an `rsync`, `umount` said
   "Resource busy" though `lsof` showed nothing on the volume a moment later, and the retry
   worked. Something system-side, most likely indexing, briefly held it.
@@ -334,6 +371,18 @@ The menu-bar app (0.1.1):
 | Open the app with the unit on (six times, four of them straight after replacing the app) | mounted in 1–2 s; once, after a replacement, the mount stalled (see "Lessons") |
 | The welcome message, "Open SP-404 Drive at login" ticked | macOS: "Login Item Added" |
 
+1.1.1, sidebar and stuck fskitd (2026-11-06):
+
+| Test | Result |
+|---|---|
+| No entry in Finder's list and no `sidebar-added`, `sp404drive mount` | added under Locations with an Eject button (screenshot); `sidebar-added` written |
+| Entry removed from the list (`LSSharedFileListItemRemove`), unmount, mount | not added again; "under Go > Computer. (It was removed from the sidebar...)"; it's in the Computer view |
+| Eject and mount again with the entry there | still in the sidebar |
+| `pkill -TERM SP404FS` while mounted, then `sp404drive mount` | stopped before mounting, exit status 3, the message names `clear-stale-mount` |
+| The same, then open the app | password prompt; `fskitd` restarted; mounted 1 s later |
+| Unmount, replace the app, open it (stuck task) | exit status 3 after the extension gave up (10 s); password prompt; `fskitd` restarted; mounted at once |
+| `plutil -remove` of the record alone, `fskitd` running on | the next mount still failed with 516 |
+
 Not tested yet:
 
 - Finder: Eject from the sidebar, copies and moves by dragging, `.DS_Store` writes;
@@ -347,6 +396,8 @@ Not tested yet:
   fails), Install Command-Line Tool…, Open at Login across a restart, switching the unit
   off and straight back on while the old volume is still being unmounted, the forced
   unmount when a program has a file open on the drive, and the stalled-mount recovery.
+- Finder's own "Remove from Sidebar" (tested by removing the entry through the API);
+  restarting `fskitd` while another FSKit volume is mounted; Cancel in the password prompt.
 - macOS before 26 (the message), Intel Macs (no build yet), `sp404drive unmount` giving up
   after 60 s, `sudo ln` into `/usr/local/bin`.
 

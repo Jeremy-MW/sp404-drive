@@ -34,7 +34,7 @@ targets:
         CFBundleDisplayName: SP-404 Drive
         NSHumanReadableCopyright: "Copyright © 2026 polecatplugins.com. GPL-3.0-only."
         # Keep in step with the version in Cargo.toml (sp404drive --version).
-        CFBundleShortVersionString: "1.1.0"
+        CFBundleShortVersionString: "1.1.1"
         LSApplicationCategoryType: public.app-category.music
         LSUIElement: true
         LSMinimumSystemVersion: "26.0"
@@ -86,7 +86,7 @@ targets:
       path: Extension/Info.plist
       properties:
         CFBundleDisplayName: SP-404MKII
-        CFBundleShortVersionString: "1.1.0"
+        CFBundleShortVersionString: "1.1.1"
         LSMinimumSystemVersion: "26.0"
         EXAppExtensionAttributes:
           EXExtensionPointIdentifier: com.apple.fskit.fsmodule

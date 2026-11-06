@@ -70,6 +70,10 @@ pub fn mount(
         }
     }
 
+    if stale_records(&folder).is_ok_and(|found| !found.is_empty()) {
+        return Err(StaleMount { folder }.into());
+    }
+
     if folder == default
         && let Some(parent) = folder.parent()
     {
@@ -77,6 +81,7 @@ pub fn mount(
     }
     let created = prepare_folder(&folder)?;
     let url = resource_url(&port, cache_secs, read_only);
+    let started = local_time_now();
     let mut cmd = Command::new("/sbin/mount");
     cmd.args(["-F", "-t", FS_TYPE]);
     if read_only {
@@ -103,6 +108,14 @@ pub fn mount(
         Err(e) => return failed(anyhow!("running /sbin/mount: {e}")),
     };
     if !output.status.success() {
+        if fskit_stuck_since(&started) {
+            return failed(
+                StaleMount {
+                    folder: folder.clone(),
+                }
+                .into(),
+            );
+        }
         return failed(anyhow!(mount_error(&output, &port)));
     }
     if !is_sp404_mount(&folder) {
@@ -116,8 +129,22 @@ pub fn mount(
         folder.display(),
         if read_only { ", read-only" } else { "" }
     );
-    if folder == default {
-        println!("In Finder it's SP-404MKII, under Locations in the sidebar.");
+    if folder == default
+        && let Some(parent) = folder.parent()
+    {
+        let record = parent.join(sidebar::RECORD);
+        match sidebar::show(&folder, &record) {
+            sidebar::Shown::InSidebar => {
+                println!("In Finder it's SP-404MKII, under Locations in the sidebar.")
+            }
+            sidebar::Shown::RemovedByUser => println!(
+                "In Finder it's SP-404MKII, under Go > Computer. (It was removed from the \
+                 sidebar; drag it back there to show it again.)"
+            ),
+            sidebar::Shown::Failed => {
+                println!("In Finder it's SP-404MKII, under Go > Computer.")
+            }
+        }
     }
     println!("Unmount with `sp404drive unmount`, or eject it in Finder.");
     Ok(())
@@ -496,6 +523,334 @@ fn sp404_mounts() -> anyhow::Result<Vec<Mounted>> {
                 from: c_text(&s.f_mntfromname),
             })
             .collect())
+    }
+}
+
+/// fskitd's record of the FSKit volumes mounted, readable by anyone, written by root.
+const LIVEFS_SETTINGS: &str = "/Library/Application Support/livefsd/settings.plist";
+
+/// fskitd is stuck on an earlier mount: it has a stale record of a mount on the folder, or
+/// it refused this mount for a reason only a restart clears. The exit status is
+/// `STALE_MOUNT_STATUS`, so the app can tell this failure apart.
+#[derive(Debug)]
+pub struct StaleMount {
+    folder: PathBuf,
+}
+
+/// The exit status for a `StaleMount`.
+pub const STALE_MOUNT_STATUS: u8 = 3;
+
+impl std::fmt::Display for StaleMount {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // The folder in full: sudo may not keep HOME, which `~` needs.
+        write!(
+            f,
+            "macOS's file system service (fskitd) is stuck on an earlier SP-404MKII mount, \
+             so it won't mount on {0} until it's restarted: \
+             `sudo sp404drive clear-stale-mount '{0}'`",
+            self.folder.display()
+        )
+    }
+}
+
+impl std::error::Error for StaleMount {}
+
+/// The indexes of fskitd's records of a mount on `folder`. When the extension is ended
+/// while mounted (macOS did it once, as the app was replaced), fskitd can't finish the
+/// unmount and keeps the record; every later mount on that folder then fails, with
+/// "Failed to store the mount point in settings file!" (NSCocoaErrorDomain 516) in its log
+/// and "Unable to invoke task" from `mount -F`. A record is stale only while nothing is
+/// mounted there.
+fn stale_records(folder: &Path) -> anyhow::Result<Vec<usize>> {
+    if is_sp404_mount(folder) {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::new();
+    // `plutil -extract` fails past the last record (or with no file, or no records).
+    for index in 0.. {
+        let output = Command::new("/usr/bin/plutil")
+            .args([
+                "-extract",
+                &format!("mounts.{index}.mountedOn"),
+                "raw",
+                "-o",
+                "-",
+            ])
+            .arg(LIVEFS_SETTINGS)
+            .stderr(Stdio::null())
+            .output()
+            .context("running /usr/bin/plutil")?;
+        if !output.status.success() {
+            break;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        if Path::new(text.trim_end_matches('\n')) == folder {
+            found.push(index);
+        }
+    }
+    Ok(found)
+}
+
+/// What fskitd logs when it refuses a mount that only a restart lets through: a stale
+/// record of a mount on the folder (also caught before mounting, from the file), or a task
+/// it thinks is still running from an earlier mount. That one came after a mount and
+/// unmount just before the app was replaced and relaunched, and stayed after the
+/// extension process had ended.
+const FSKIT_STUCK: [&str; 2] = [
+    "Failed to store the mount point in settings file",
+    "Can't start new task, previous task is running",
+];
+
+/// The local time as `log show --start` takes it.
+fn local_time_now() -> String {
+    Command::new("/bin/date")
+        .arg("+%Y-%m-%d %H:%M:%S")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Whether fskitd has logged one of the `FSKIT_STUCK` refusals since `start`. Any user can
+/// read its log.
+fn fskit_stuck_since(start: &str) -> bool {
+    if start.is_empty() {
+        return false;
+    }
+    let predicate = FSKIT_STUCK
+        .iter()
+        .map(|m| format!("eventMessage CONTAINS \"{m}\""))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let mut cmd = Command::new("/usr/bin/log");
+    cmd.args([
+        "show",
+        "--style",
+        "compact",
+        "--start",
+        start,
+        "--predicate",
+    ])
+    .arg(format!("process == \"fskitd\" AND ({predicate})"))
+    .stderr(Stdio::null());
+    match run(cmd, Duration::from_secs(20)) {
+        Ok(Some(output)) => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| FSKIT_STUCK.iter().any(|m| line.contains(m))),
+        _ => false,
+    }
+}
+
+/// `sp404drive clear-stale-mount`, as root: removes fskitd's stale records of a mount on
+/// the folder, if any, then restarts fskitd (launchd starts it again when it's next
+/// needed). The restart is what counts: fskitd keeps its records in memory too, and with
+/// the file fixed but fskitd running on, the next mount still failed.
+pub fn clear_stale_mount(mount_point: &str) -> anyhow::Result<()> {
+    let folder = folder_path(mount_point)?;
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        bail!(
+            "this needs administrator rights: `sudo sp404drive clear-stale-mount '{}'`",
+            folder.display()
+        );
+    }
+    if is_sp404_mount(&folder) {
+        bail!(
+            "the SP-404MKII is mounted on {}; nothing to clear",
+            folder.display()
+        );
+    }
+    let found = stale_records(&folder)?;
+    // Highest first, so the indexes still to go stay valid.
+    for index in found.iter().rev() {
+        let status = Command::new("/usr/bin/plutil")
+            .args(["-remove", &format!("mounts.{index}")])
+            .arg(LIVEFS_SETTINGS)
+            .status()
+            .context("running /usr/bin/plutil")?;
+        if !status.success() {
+            bail!("plutil couldn't remove record {index} from {LIVEFS_SETTINGS}");
+        }
+    }
+    // Exit status 1 means fskitd wasn't running, which is just as good.
+    Command::new("/usr/bin/killall")
+        .arg("fskitd")
+        .stderr(Stdio::null())
+        .status()
+        .context("running /usr/bin/killall")?;
+    println!("Restarted macOS's file system service (fskitd); mount again now.");
+    Ok(())
+}
+
+/// Finder's sidebar. macOS files an FSKit volume with no disk under Recent Servers and
+/// never adds it to the sidebar by itself (measured on macOS 26.6: mounting, remounting,
+/// and restarting Finder and sharedfilelistd with it mounted), so `mount` adds it to
+/// Locations, once. The list's snapshot holds only visible items, and "Remove from
+/// Sidebar" hides an item rather than deleting it, so a record file beside the mount
+/// folder says it was added: missing from the list after that, the user removed it.
+mod sidebar {
+    use std::ffi::{OsStr, c_void};
+    use std::fs;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    use std::ptr;
+
+    /// The record file's name, in the mount folder's parent.
+    pub const RECORD: &str = "sidebar-added";
+
+    pub enum Shown {
+        InSidebar,
+        RemovedByUser,
+        Failed,
+    }
+
+    type CFTypeRef = *const c_void;
+
+    // LSSharedFileListItemResolutionFlags.
+    const NO_USER_INTERACTION: u32 = 1 << 0;
+    const DO_NOT_MOUNT_VOLUMES: u32 = 1 << 1;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFRelease(cf: CFTypeRef);
+        fn CFArrayGetCount(array: CFTypeRef) -> isize;
+        fn CFArrayGetValueAtIndex(array: CFTypeRef, index: isize) -> CFTypeRef;
+        fn CFURLCreateFromFileSystemRepresentation(
+            allocator: CFTypeRef,
+            buffer: *const u8,
+            length: isize,
+            is_directory: u8,
+        ) -> CFTypeRef;
+        fn CFURLGetFileSystemRepresentation(
+            url: CFTypeRef,
+            resolve_against_base: u8,
+            buffer: *mut u8,
+            max_length: isize,
+        ) -> u8;
+    }
+
+    // Deprecated since macOS 10.11 but still what Finder's lists are made of; there's no
+    // replacement for adding to the sidebar.
+    #[link(name = "CoreServices", kind = "framework")]
+    unsafe extern "C" {
+        static kLSSharedFileListFavoriteVolumes: CFTypeRef;
+        static kLSSharedFileListItemLast: CFTypeRef;
+        fn LSSharedFileListCreate(
+            allocator: CFTypeRef,
+            list_type: CFTypeRef,
+            options: CFTypeRef,
+        ) -> CFTypeRef;
+        fn LSSharedFileListCopySnapshot(list: CFTypeRef, seed: *mut u32) -> CFTypeRef;
+        fn LSSharedFileListItemCopyResolvedURL(
+            item: CFTypeRef,
+            flags: u32,
+            error: *mut CFTypeRef,
+        ) -> CFTypeRef;
+        fn LSSharedFileListInsertItemURL(
+            list: CFTypeRef,
+            after: CFTypeRef,
+            name: CFTypeRef,
+            icon: CFTypeRef,
+            url: CFTypeRef,
+            properties: CFTypeRef,
+            properties_to_clear: CFTypeRef,
+        ) -> CFTypeRef;
+    }
+
+    /// A Core Foundation object this code owns (from a Create or Copy call); may be null.
+    struct Owned(CFTypeRef);
+
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: an owned, non-null Core Foundation object, released once.
+                unsafe { CFRelease(self.0) }
+            }
+        }
+    }
+
+    /// Makes sure the volume mounted on `folder` is in the sidebar, unless the user
+    /// removed it.
+    pub fn show(folder: &Path, record: &Path) -> Shown {
+        // SAFETY: Core Foundation and Launch Services calls with valid arguments; what they
+        // create or copy is released by `Owned`.
+        unsafe {
+            let list = Owned(LSSharedFileListCreate(
+                ptr::null(),
+                kLSSharedFileListFavoriteVolumes,
+                ptr::null(),
+            ));
+            if list.0.is_null() {
+                return Shown::Failed;
+            }
+            if listed(&list, folder) {
+                let _ = fs::write(record, b"");
+                return Shown::InSidebar;
+            }
+            if record.exists() {
+                return Shown::RemovedByUser;
+            }
+            let bytes = folder.as_os_str().as_bytes();
+            let url = Owned(CFURLCreateFromFileSystemRepresentation(
+                ptr::null(),
+                bytes.as_ptr(),
+                bytes.len() as isize,
+                1,
+            ));
+            if url.0.is_null() {
+                return Shown::Failed;
+            }
+            let item = Owned(LSSharedFileListInsertItemURL(
+                list.0,
+                kLSSharedFileListItemLast,
+                ptr::null(),
+                ptr::null(),
+                url.0,
+                ptr::null(),
+                ptr::null(),
+            ));
+            if item.0.is_null() {
+                return Shown::Failed;
+            }
+            let _ = fs::write(record, b"");
+            Shown::InSidebar
+        }
+    }
+
+    /// Whether a visible item in the list resolves to `folder`.
+    fn listed(list: &Owned, folder: &Path) -> bool {
+        // SAFETY: as in `show`; items from the snapshot are borrowed from it.
+        unsafe {
+            let mut seed = 0u32;
+            let items = Owned(LSSharedFileListCopySnapshot(list.0, &mut seed));
+            if items.0.is_null() {
+                return false;
+            }
+            for index in 0..CFArrayGetCount(items.0) {
+                let item = CFArrayGetValueAtIndex(items.0, index);
+                let url = Owned(LSSharedFileListItemCopyResolvedURL(
+                    item,
+                    NO_USER_INTERACTION | DO_NOT_MOUNT_VOLUMES,
+                    ptr::null_mut(),
+                ));
+                if url.0.is_null() {
+                    continue;
+                }
+                let mut path = [0u8; libc::PATH_MAX as usize];
+                if CFURLGetFileSystemRepresentation(
+                    url.0,
+                    1,
+                    path.as_mut_ptr(),
+                    path.len() as isize,
+                ) != 0
+                {
+                    let len = path.iter().position(|&b| b == 0).unwrap_or(path.len());
+                    if Path::new(OsStr::from_bytes(&path[..len])) == folder {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
     }
 }
 

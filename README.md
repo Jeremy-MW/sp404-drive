@@ -81,7 +81,11 @@ with the new one, and open it.
 ### Use
 
 Switch the SP-404MKII on and it appears in Finder's sidebar, under Locations, as
-**SP-404MKII**. Switch it off and it's ejected.
+**SP-404MKII**. Switch it off and it's ejected. If you remove it from the sidebar, it stays
+removed; it's still under **Go > Computer**, and you can drag it back.
+
+Sometimes macOS's file system service gets stuck on an earlier mount, for example just
+after an update. SP-404 Drive then asks for your password, restarts the service and mounts.
 
 The menu-bar icon is a ring when nothing is mounted (dimmed when no unit is connected) and
 a solid disc when the drive is mounted. Click it for the menu:
