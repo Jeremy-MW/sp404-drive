@@ -149,7 +149,7 @@ mod platform {
     }
 }
 
-// macOS: the drive is the FSKit extension in SP-404 Drive.app (see the README).
+// macOS: the drive is the FSKit extension in SP-404 Drive.app (see docs/macos.md).
 #[cfg(target_os = "macos")]
 #[path = "mac_cli.rs"]
 mod platform;
