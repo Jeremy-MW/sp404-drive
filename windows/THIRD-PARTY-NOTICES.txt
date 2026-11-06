@@ -1,8 +1,11 @@
 SP-404 Drive: third-party software
 ==================================
 
-SP-404 Drive is free software under the GNU General Public License, version 3 or later
-(LICENSE.txt). Its source code is at https://github.com/Jeremy-MW/sp404-drive.
+Copyright © 2026 polecatplugins.com.
+
+SP-404 Drive is free software under version 3 of the GNU General Public License
+(LICENSE.txt), and comes with no warranty. Its source code is at
+https://github.com/Jeremy-MW/sp404-drive.
 
 It includes, or its installer carries:
 
@@ -14,7 +17,7 @@ WinFsp (Windows File System Proxy)
 
 SparkyMK2: the sp404-proto crate
   A clean-room client for the SP-404MKII by TuscanPL and contributors.
-  GNU General Public License version 3.
+  GNU General Public License, version 3 or later.
   Source code: https://github.com/TuscanPL/SparkyMK2
   The drive compiles in its sp404-proto crate, and src/link/mod.rs follows its
   sp404-device file API code.
@@ -24,11 +27,29 @@ winfsp and winfsp-sys (Rust bindings for WinFsp)
   Source code: https://github.com/SnowflakePowered/winfsp-rs
 
 Other Rust crates
-  The programs are built from Rust crates published on crates.io under permissive
-  licences: MIT or Apache-2.0 (among them windows, clap, anyhow, log, env_logger and
-  thiserror), Unlicense or MIT (memchr, aho-corasick, jiff), Zlib, Apache-2.0 or MIT
-  (tinyvec), and the Unicode licence for unicode-normalization's data. Cargo.lock in the
-  source code lists every crate and version.
+  The programs are also built from these crates, published on crates.io. Where a crate
+  offers a choice of licences, SP-404 Drive takes it under the one named here. The
+  licence texts are in the licences folder beside this file. Cargo.lock in the source
+  code lists every crate and version.
+
+  Apache License 2.0 (licences\Apache-2.0.txt), chosen from "MIT or Apache-2.0", or from
+  "Zlib, Apache-2.0 or MIT" for bytemuck and tinyvec:
+    anstream, anstyle, anstyle-parse, anstyle-query, anstyle-wincon, anyhow, bytemuck,
+    cfg-if, clap, clap_builder, clap_lex, colorchoice, env_filter, env_logger,
+    is_terminal_polyfill, lock_api, log, once_cell_polyfill, parking_lot,
+    parking_lot_core, regex, regex-automata, regex-syntax, scopeguard, smallvec,
+    static_assertions, thiserror, tinyvec, unicode-normalization, utf8parse, widestring,
+    windows, windows-collections, windows-core, windows-future, windows-link,
+    windows-numerics, windows-result, windows-strings, windows-sys, windows-threading
+
+  The Unlicense, chosen from "Unlicense or MIT" (no conditions):
+    aho-corasick, jiff, jiff-core, memchr
+
+  MIT License:
+    strsim (licences\MIT-strsim.txt)
+
+  Unicode License v3, for the Unicode data in unicode-normalization:
+    licences\Unicode-3.0-unicode-normalization.txt
 
 "SP-404MKII" and "Roland" are trademarks of Roland Corporation. SP-404 Drive is not
 affiliated with or endorsed by Roland Corporation.

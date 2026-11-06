@@ -223,27 +223,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openExtensionSettings() { NSWorkspace.shared.open(extensionSettings) }
 
-    /// The standard About panel, cut down to the icon and two lines: the name with the
-    /// version, and a link to polecatplugins.com.
+    /// The standard About panel, cut down to the icon, the name with the version, and the
+    /// GPL's legal notices: the copyright, no warranty, and where the licence and source are.
     @objc private func showAbout() {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         let centred = NSMutableParagraphStyle()
         centred.alignment = .center
-        let credits = NSMutableAttributedString(
-            string: "From ",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
-                .foregroundColor: NSColor.labelColor,
-                .paragraphStyle: centred,
-            ])
-        credits.append(
+        let plain: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: centred,
+        ]
+        func link(_ text: String, _ url: String) -> NSAttributedString {
             NSAttributedString(
-                string: "polecatplugins.com",
+                string: text,
                 attributes: [
                     .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
-                    .link: URL(string: "https://polecatplugins.com")!,
+                    .link: URL(string: url)!,
                     .paragraphStyle: centred,
-                ]))
+                ])
+        }
+        let credits = NSMutableAttributedString(string: "Copyright © 2026 ", attributes: plain)
+        credits.append(link("polecatplugins.com", "https://polecatplugins.com"))
+        credits.append(
+            NSAttributedString(
+                string: "\n\nFree software under version 3 of the GNU General Public License, with no warranty. ",
+                attributes: plain))
+        credits.append(link("Licence and source code", "https://github.com/Jeremy-MW/sp404-drive"))
         NSApp.activate()
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "SP-404MkII Drive \(version)",

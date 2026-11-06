@@ -86,7 +86,9 @@ $risk
 
 "SP-404MKII" and "Roland" are trademarks of Roland Corporation. SP-404 Drive is not affiliated with or endorsed by Roland Corporation.
 
-SP-404 Drive is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. Source code: https://github.com/Jeremy-MW/sp404-drive
+Copyright $([char]0x00A9) 2026 polecatplugins.com.
+
+SP-404 Drive is free software: you can redistribute it and/or modify it under the terms of version 3 of the GNU General Public License as published by the Free Software Foundation. It comes with no warranty. Source code: https://github.com/Jeremy-MW/sp404-drive
 
 $gpl
 "@

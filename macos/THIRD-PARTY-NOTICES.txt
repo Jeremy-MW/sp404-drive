@@ -1,0 +1,49 @@
+SP-404 Drive: third-party software
+==================================
+
+Copyright © 2026 polecatplugins.com.
+
+SP-404 Drive is free software under version 3 of the GNU General Public License
+(LICENSE, beside this file), and comes with no warranty. Its source code is at
+https://github.com/Jeremy-MW/sp404-drive.
+
+It includes:
+
+SparkyMK2: the sp404-proto crate
+  A clean-room client for the SP-404MKII by TuscanPL and contributors.
+  GNU General Public License, version 3 or later.
+  Source code: https://github.com/TuscanPL/SparkyMK2
+  The drive compiles in its sp404-proto crate, and src/link/mod.rs follows its
+  sp404-device file API code.
+
+serialport (used only to find the unit's port by USB id)
+  Mozilla Public License, version 2.0 (licences/MPL-2.0.txt).
+  Source code: https://github.com/serialport/serialport-rs
+
+Other Rust crates
+  The programs are also built from these crates, published on crates.io. Where a crate
+  offers a choice of licences, SP-404 Drive takes it under the one named here. The
+  licence texts are in the licences folder beside this file. Cargo.lock in the source
+  code lists every crate and version.
+
+  Apache License 2.0 (licences/Apache-2.0.txt), chosen from "MIT or Apache-2.0", from
+  "Zlib, Apache-2.0 or MIT" for tinyvec, and from "BSD-2-Clause, MIT or Apache-2.0" for
+  mach2:
+    anstream, anstyle, anstyle-parse, anstyle-query, anyhow, bitflags, cfg-if, clap,
+    clap_builder, clap_lex, colorchoice, core-foundation, core-foundation-sys,
+    env_filter, env_logger, io-kit-sys, is_terminal_polyfill, libc, log, mach2, regex,
+    regex-automata, regex-syntax, scopeguard, thiserror, tinyvec, unicode-normalization,
+    utf8parse
+
+  The Unlicense, chosen from "Unlicense or MIT" (no conditions):
+    aho-corasick, jiff, jiff-core, memchr
+
+  MIT License:
+    nix (licences/MIT-nix.txt)
+    strsim (licences/MIT-strsim.txt)
+
+  Unicode License v3, for the Unicode data in unicode-normalization:
+    licences/Unicode-3.0-unicode-normalization.txt
+
+"SP-404MKII" and "Roland" are trademarks of Roland Corporation. SP-404 Drive is not
+affiliated with or endorsed by Roland Corporation.

@@ -126,6 +126,33 @@ clone:
 git config core.hooksPath .githooks
 ```
 
+## Licences of the crates
+
+The programs ship with the licence texts of the crates compiled into them: `licences/`
+holds them, `windows/THIRD-PARTY-NOTICES.txt` and `macos/THIRD-PARTY-NOTICES.txt` say
+which crate is taken under which licence, the Windows installer installs the three texts
+Windows needs into `licences\` beside the programs, and the Mac app carries the whole
+folder in `Contents/Resources/licences`.
+
+Where a crate offers a choice, we take Apache-2.0 (one shared text, and no per-crate
+copyright line needed in a compiled program) or the Unlicense (no conditions). Only
+crates with no such choice get a file of their own: MIT-only crates (their copyright line
+is in the text), MPL-2.0 (`serialport`) and the Unicode licence. No crate in use ships an
+Apache NOTICE file.
+
+When dependencies change (`Cargo.lock`), list what's compiled into the programs, leaving
+out crates used only at build time (proc-macros, `syn`, `quote`, bindgen):
+
+```
+cargo tree --target x86_64-pc-windows-msvc -e normal --prefix none -p sp404-drive
+cargo tree --target aarch64-apple-darwin -e normal --prefix none -p sp404-drive
+cargo tree --target aarch64-apple-darwin -e normal --prefix none -p sp404-ffi
+```
+
+Then update both notices files, and copy any new licence text that has no choice from
+the crate's own files in `~/.cargo/registry/src/` into `licences/` (and into the
+installer's file list, for Windows).
+
 ## Code layout
 
 ```
@@ -173,6 +200,8 @@ macos/         The Mac app and its FSKit extension (Swift), as an XcodeGen proje
                FSKit call -> sp404.h), Extension/Item.swift (an item and its in-memory
                extended attributes), build-rust.sh (builds ffi/ and the sp404drive
                command for Xcode), and ExportOptions.plist (the Developer ID export).
+licences/      The licence texts of the crates compiled in that need their own (see
+               "Licences of the crates").
 examples/      Checks run against the unit with the drive unmounted: link_check (the
                link), idle_handles (issue #1 and the unit's session), list_tree (what is
                really in a folder).

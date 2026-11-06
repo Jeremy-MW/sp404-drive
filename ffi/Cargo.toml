@@ -4,7 +4,7 @@ description = "C interface to sp404-drive's core, for the macOS FSKit extension"
 version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
-license = "GPL-3.0-or-later"
+license = "GPL-3.0-only"
 publish = false
 
 [lib]

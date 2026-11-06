@@ -46,6 +46,8 @@ Unicode True
 !define Publisher "Polecat Plugins"
 !define UninstallKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\${ProductId}"
 !define Tray "sp404drive-tray.exe"
+; The licence texts of the crates compiled into the programs (see THIRD-PARTY-NOTICES.txt).
+!define LicencesDir "${__FILEDIR__}\..\licences"
 
 Name "${ProductName} ${Version}"
 OutFile "${OutDir}\SP-404-Drive-${Version}-windows-x64-setup.exe"
@@ -63,7 +65,7 @@ VIAddVersionKey "CompanyName" "${Publisher}"
 VIAddVersionKey "FileDescription" "${ProductName} installer"
 VIAddVersionKey "FileVersion" "${Version}"
 VIAddVersionKey "ProductVersion" "${Version}"
-VIAddVersionKey "LegalCopyright" "GPL-3.0-or-later"
+VIAddVersionKey "LegalCopyright" "Copyright © 2026 polecatplugins.com. GPL-3.0-only."
 
 !define MUI_ICON "${IconFile}"
 !define MUI_UNICON "${IconFile}"
@@ -161,6 +163,11 @@ Section "${ProductName}" SecMain
   File "${BinDir}\${Tray}"
   File "/oname=LICENSE.txt" "${LicenceFile}"
   File "/oname=THIRD-PARTY-NOTICES.txt" "${NoticesFile}"
+  SetOutPath "$INSTDIR\licences"
+  File "${LicencesDir}\Apache-2.0.txt"
+  File "${LicencesDir}\MIT-strsim.txt"
+  File "${LicencesDir}\Unicode-3.0-unicode-normalization.txt"
+  SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   ; The command, for every user's terminal.
@@ -202,6 +209,10 @@ Section "Uninstall"
   Delete "$INSTDIR\${Tray}"
   Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt"
+  Delete "$INSTDIR\licences\Apache-2.0.txt"
+  Delete "$INSTDIR\licences\MIT-strsim.txt"
+  Delete "$INSTDIR\licences\Unicode-3.0-unicode-normalization.txt"
+  RMDir "$INSTDIR\licences"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
   ; Only if nothing else of ours is in it.

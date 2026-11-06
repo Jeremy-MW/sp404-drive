@@ -4,7 +4,7 @@ description = "Mount a Roland SP-404MKII as a drive, with its internal storage a
 version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
-license = "GPL-3.0-or-later"
+license = "GPL-3.0-only"
 publish = false
 
 [workspace]

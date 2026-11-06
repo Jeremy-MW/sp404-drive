@@ -4,7 +4,8 @@
 //! (https://github.com/TuscanPL/SparkyMK2), `crates/sp404-device/src/files.rs` at commit
 //! 3007b5d, by the SparkyMK2 contributors, licensed GPL-3.0-or-later. Modified in
 //! November 2026 for sp404-drive: the request/reply logic now runs over this module's
-//! own event-driven link instead of `sp404-device`'s connection.
+//! own event-driven link instead of `sp404-device`'s connection. As part of sp404-drive,
+//! this file is distributed under GPL-3.0 only.
 //!
 //! The drive runs in the background for hours, so the link waits for the device instead
 //! of reading on a timer: a reader thread blocks on the port until bytes arrive, and a

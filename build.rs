@@ -100,7 +100,7 @@ BEGIN
       VALUE "FileDescription", "{description}"
       VALUE "FileVersion", "{version}"
       VALUE "InternalName", "{file}"
-      VALUE "LegalCopyright", "GPL-3.0-or-later"
+      VALUE "LegalCopyright", "Copyright © 2026 polecatplugins.com. GPL-3.0-only."
       VALUE "OriginalFilename", "{file}.exe"
       VALUE "ProductName", "SP-404 Drive"
       VALUE "ProductVersion", "{version}"

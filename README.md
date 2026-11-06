@@ -178,5 +178,7 @@ author, and it was tested on a real SP-404MKII.
 
 ## License
 
-GPL-3.0-or-later (see `LICENSE`), including its Disclaimer of Warranty and Limitation of
-Liability (sections 15 and 16).
+Copyright © 2026 polecatplugins.com.
+
+GNU General Public License, version 3 only (see `LICENSE`), including its Disclaimer of
+Warranty and Limitation of Liability (sections 15 and 16).

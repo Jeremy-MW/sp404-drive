@@ -13,7 +13,10 @@ const DEFAULT_MOUNT: &str = "~/Library/Application Support/SP-404 Drive/SP-404MK
 #[command(
     name = "sp404drive",
     version,
-    about = "Mount a Roland SP-404MKII as a drive"
+    about = "Mount a Roland SP-404MKII as a drive",
+    after_help = "Copyright © 2026 polecatplugins.com. Free software under version 3 of the GNU \
+                  General Public License, with no warranty. Licence and source code: \
+                  https://github.com/Jeremy-MW/sp404-drive"
 )]
 struct Cli {
     /// More logging in the drive's log file (-v debug, -vv trace).

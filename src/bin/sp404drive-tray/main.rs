@@ -668,8 +668,8 @@ mod app {
         }
     }
 
-    /// The app's name and version, and a link to polecatplugins.com, as the Mac's About
-    /// panel.
+    /// The app's name and version, and the GPL's legal notices (the copyright, no warranty,
+    /// and where the licence and source are), as the Mac's About panel.
     fn about(instance: HINSTANCE) {
         let title = format!("SP-404MkII Drive {}", env!("CARGO_PKG_VERSION"));
         modal(|| {
@@ -677,7 +677,10 @@ mod app {
                 instance,
                 &Dialog {
                     title: &title,
-                    text: "From <a href=\"https://polecatplugins.com\">polecatplugins.com</a>",
+                    text: "Copyright © 2026 <a href=\"https://polecatplugins.com\">polecatplugins.com</a>\n\n\
+                           Free software under version 3 of the GNU General Public License, \
+                           with no warranty. \
+                           <a href=\"https://github.com/Jeremy-MW/sp404-drive\">Licence and source code</a>",
                     app_icon: true,
                     buttons: &[],
                     checkbox: None,

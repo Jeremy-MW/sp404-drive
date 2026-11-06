@@ -17,11 +17,22 @@ targets:
   SP404Drive:
     type: application
     platform: macOS
-    sources: [App]
+    sources:
+      - App
+      # The GPL and the third-party notices travel with the app, in Contents/Resources.
+      - path: ../LICENSE
+        buildPhase: resources
+      - path: THIRD-PARTY-NOTICES.txt
+        buildPhase: resources
+      # The licence texts of the crates compiled in, as Contents/Resources/licences.
+      - path: ../licences
+        type: folder
+        buildPhase: resources
     info:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: SP-404 Drive
+        NSHumanReadableCopyright: "Copyright © 2026 polecatplugins.com. GPL-3.0-only."
         # Keep in step with the version in Cargo.toml (sp404drive --version).
         CFBundleShortVersionString: "0.1.1"
         LSApplicationCategoryType: public.app-category.music
