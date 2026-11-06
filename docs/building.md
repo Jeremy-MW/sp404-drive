@@ -31,9 +31,29 @@ powershell -File windows\build-installer.ps1
 It builds the programs (`-SkipBuild` uses those already built), downloads WinFsp's
 installer (the version pinned in the script) once into `target\installer` and checks its
 SHA-256 every time, writes the app icon and the licence page (the README's
-use-at-your-own-risk notice, then the GPL), and compiles `windows\installer.nsi`. The
-result is `target\installer\SP-404-Drive-<version>-windows-x64-setup.exe`, about 2.6 MB.
-It isn't signed yet.
+use-at-your-own-risk notice, then the GPL), and compiles `windows\installer.nsi` in two
+passes. The result is `target\installer\SP-404-Drive-<version>-windows-x64-setup.exe`,
+about 2.6 MB.
+
+For a release, add `-Sign`, with the code-signing token plugged in:
+
+```
+powershell -File windows\build-installer.ps1 -Sign
+```
+
+`windows\sign.ps1` signs the three programs, then `Uninstall.exe`, then the installer
+(SHA-256, timestamped by Sectigo), and verifies each signature. The token asks for its
+password once per file, five times in all. Last, the script unpacks the finished
+installer with 7-Zip (`C:\Program Files\7-Zip`) and checks that every program and the
+uninstaller inside it is signed. Without `-Sign`, nothing is signed and the script says
+the installer isn't for release.
+
+Why two passes: NSIS can only make an uninstaller by running an installer, and by default
+the installer writes `Uninstall.exe` on the user's PC, where it can't be signed. So pass 1
+builds a throwaway installer that only writes `Uninstall.exe` into a staging folder (run
+with `__COMPAT_LAYER=RunAsInvoker`, so it brings up no administrator prompt; it has to ask
+for administrator rights itself, because the uninstaller takes the same level), the
+script signs it, and pass 2 builds the real installer, which installs that signed file.
 
 ## macOS
 

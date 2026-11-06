@@ -134,9 +134,10 @@ That's how `ports` finds the unit.
   `Exec explorer.exe "<app>"` starts it unelevated, as Explorer's child.
 - **Windows 11 hides new notification icons** under the ^, and apps can't pin themselves.
   The welcome message says how and opens Taskbar Settings.
-- **Signing,** when it comes, needs a two-pass build for the uninstaller (generate
-  `Uninstall.exe`, sign it, then embed it), since NSIS otherwise writes it on the user's
-  PC.
+- **Signing needs a two-pass build for the uninstaller,** since NSIS otherwise writes
+  `Uninstall.exe` on the user's PC, unsigned, and uninstalling would then show "Publisher:
+  Unknown". Pass 1 writes it, it's signed, and pass 2 installs the signed file (see
+  [building.md](building.md#windows)).
 
 ## Lessons about Windows
 

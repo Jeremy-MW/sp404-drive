@@ -5,9 +5,14 @@
 ; - WinFsp's own signed installer, run silently when WinFsp is missing or older than the
 ;   one carried here. Uninstalling SP-404 Drive leaves WinFsp: other programs may use it.
 ;
-; Built by build-installer.ps1, which supplies the defines below. Not signed yet; when
-; it is, the uninstaller needs a two-pass build: one pass writes Uninstall.exe, which is
-; signed, then the second pass embeds the signed copy.
+; Built by build-installer.ps1, which supplies the defines below, in two passes, so that
+; Uninstall.exe can be signed (NSIS can only make an uninstaller by running an installer):
+;
+; - Pass 1 (/DGenerateUninstallerOnly) builds a throwaway installer whose only job is to
+;   write Uninstall.exe into UninstallerStagingDir, silently. That file is then signed.
+; - Pass 2 builds the real installer, which installs the signed Uninstall.exe as an
+;   ordinary file instead of writing a fresh, unsigned one on the user's PC (whose
+;   administrator prompt would then say "Publisher: Unknown").
 
 Unicode True
 !include "MUI2.nsh"
@@ -40,6 +45,18 @@ Unicode True
 !ifndef NoticesFile
   !error "NoticesFile must be supplied by build-installer.ps1."
 !endif
+!ifndef UninstallerStagingDir
+  !error "UninstallerStagingDir must be supplied by build-installer.ps1."
+!endif
+
+!ifdef GenerateUninstallerOnly
+  ; Pass 1 has no install section, so the install-side functions go unused.
+  !pragma warning disable 6010
+!else
+  ; Pass 2 has an Uninstall section but installs the signed Uninstall.exe as a file
+  ; rather than calling WriteUninstaller, which NSIS would otherwise warn about.
+  !pragma warning disable 6020
+!endif
 
 !define ProductName "SP-404 Drive"
 !define ProductId "SP404Drive"
@@ -50,7 +67,14 @@ Unicode True
 !define LicencesDir "${__FILEDIR__}\..\licences"
 
 Name "${ProductName} ${Version}"
-OutFile "${OutDir}\SP-404-Drive-${Version}-windows-x64-setup.exe"
+!ifdef GenerateUninstallerOnly
+  ; Run once while building, never distributed.
+  OutFile "${UninstallerStagingDir}\GenerateUninstaller.exe"
+!else
+  OutFile "${OutDir}\SP-404-Drive-${Version}-windows-x64-setup.exe"
+!endif
+; Pass 1 too: the uninstaller it writes takes the same level. (build-installer.ps1 runs
+; the generator as invoker, so building brings up no administrator prompt.)
 RequestExecutionLevel admin
 InstallDir "$PROGRAMFILES64\Polecat Plugins\SP-404 Drive"
 InstallDirRegKey HKLM "${UninstallKey}" "InstallLocation"
@@ -85,6 +109,17 @@ VIAddVersionKey "LegalCopyright" "Copyright © 2026 polecatplugins.com. GPL-3.0-
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
+!ifdef GenerateUninstallerOnly
+; Pass 1: write Uninstall.exe into the staging folder, silently, and install nothing.
+Function .onInit
+  SetSilent silent
+FunctionEnd
+
+Section "Generate"
+  SetOutPath "${UninstallerStagingDir}"
+  WriteUninstaller "${UninstallerStagingDir}\Uninstall.exe"
+SectionEnd
+!else
 Function .onInit
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP "${ProductName} needs 64-bit Windows."
@@ -96,7 +131,9 @@ Function .onInit
   ${EndIf}
   SetRegView 64
 FunctionEnd
+!endif
 
+; Both passes: the uninstaller is built in pass 1.
 Function un.onInit
   SetRegView 64
 FunctionEnd
@@ -141,6 +178,7 @@ Function InstallWinFsp
   ${EndIf}
 FunctionEnd
 
+!ifndef GenerateUninstallerOnly
 Section "${ProductName}" SecMain
   SetShellVarContext all
 
@@ -168,7 +206,8 @@ Section "${ProductName}" SecMain
   File "${LicencesDir}\MIT-strsim.txt"
   File "${LicencesDir}\Unicode-3.0-unicode-normalization.txt"
   SetOutPath "$INSTDIR"
-  WriteUninstaller "$INSTDIR\Uninstall.exe"
+  ; Made and signed in pass 1, so its signature survives.
+  File "${UninstallerStagingDir}\Uninstall.exe"
 
   ; The command, for every user's terminal.
   ExecWait '"$INSTDIR\${Tray}" --add-to-path' $0
@@ -191,6 +230,7 @@ Section "${ProductName}" SecMain
   ; In KB, for Installed apps.
   WriteRegDWORD HKLM "${UninstallKey}" "EstimatedSize" 7000
 SectionEnd
+!endif
 
 Section "Uninstall"
   SetShellVarContext all
