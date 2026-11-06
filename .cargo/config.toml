@@ -1,0 +1,4 @@
+# Windows: link the C runtime statically, so the programs need no Visual C++
+# Redistributable on the user's PC. The installer carries everything else (WinFsp).
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

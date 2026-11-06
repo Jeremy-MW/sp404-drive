@@ -1,0 +1,34 @@
+SP-404 Drive: third-party software
+==================================
+
+SP-404 Drive is free software under the GNU General Public License, version 3 or later
+(LICENSE.txt). Its source code is at https://github.com/Jeremy-MW/sp404-drive.
+
+It includes, or its installer carries:
+
+WinFsp (Windows File System Proxy)
+  Copyright Bill Zissimopoulos.
+  GNU General Public License version 3, with a FLOSS exception.
+  Source code and licence: https://github.com/winfsp/winfsp
+  The installer runs WinFsp's own signed installer (winfsp-<version>.msi), unchanged.
+
+SparkyMK2: the sp404-proto crate
+  A clean-room client for the SP-404MKII by TuscanPL and contributors.
+  GNU General Public License version 3.
+  Source code: https://github.com/TuscanPL/SparkyMK2
+  The drive compiles in its sp404-proto crate, and src/link/mod.rs follows its
+  sp404-device file API code.
+
+winfsp and winfsp-sys (Rust bindings for WinFsp)
+  GNU General Public License version 3.
+  Source code: https://github.com/SnowflakePowered/winfsp-rs
+
+Other Rust crates
+  The programs are built from Rust crates published on crates.io under permissive
+  licences: MIT or Apache-2.0 (among them windows, clap, anyhow, log, env_logger and
+  thiserror), Unlicense or MIT (memchr, aho-corasick, jiff), Zlib, Apache-2.0 or MIT
+  (tinyvec), and the Unicode licence for unicode-normalization's data. Cargo.lock in the
+  source code lists every crate and version.
+
+"SP-404MKII" and "Roland" are trademarks of Roland Corporation. SP-404 Drive is not
+affiliated with or endorsed by Roland Corporation.

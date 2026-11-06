@@ -13,7 +13,11 @@
 //! - an event the host waits on, set by `sp404drive unmount`;
 //! - a mutex the host owns while it runs. It is released (or, if the host dies,
 //!   abandoned) when the host ends, which wakes `sp404drive unmount` waiting for the
-//!   drive to be gone.
+//!   drive to be gone, and the tray app;
+//! - an event that exists while the drive is mounted read-only, for the tray app's menu.
+//!
+//! Once mounted, the host also posts a message to the tray app's window, if it's running,
+//! so a drive mounted with `sp404drive mount` shows in its menu at once.
 
 use std::ffi::c_void;
 use std::io::{Read, Write};
@@ -46,7 +50,8 @@ use windows::Win32::UI::Shell::{
     CSIDL_DESKTOP, IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellWindows,
     SID_STopLevelBrowser, SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH, ShellWindows,
 };
-use windows::core::{BSTR, HSTRING, Interface};
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_APP};
+use windows::core::{BSTR, HSTRING, Interface, PCWSTR};
 
 use crate::link::Link;
 use crate::link::windows::{SerialPort, find_ports};
@@ -60,6 +65,11 @@ pub const HOST_EXE: &str = "sp404drive-host.exe";
 /// What the host writes to its report pipe: this line once mounted, or `error: <reason>`.
 pub const REPORT_MOUNTED: &str = "mounted";
 pub const REPORT_ERROR: &str = "error: ";
+
+/// The window class of the tray app's (hidden) window.
+pub const TRAY_WINDOW_CLASS: &str = "sp404drive-tray";
+/// Posted to the tray app's window once a drive is mounted.
+pub const TRAY_MOUNTED_MESSAGE: u32 = WM_APP + 1;
 
 pub struct MountArgs {
     pub mount_point: String,
@@ -89,6 +99,10 @@ fn unmount_event_name(mount_point: &str) -> HSTRING {
 
 fn running_mutex_name(mount_point: &str) -> HSTRING {
     HSTRING::from(format!("Local\\sp404drive-running-{}", tag(mount_point)))
+}
+
+fn read_only_event_name(mount_point: &str) -> HSTRING {
+    HSTRING::from(format!("Local\\sp404drive-read-only-{}", tag(mount_point)))
 }
 
 /// Where the host serving `mount_point` logs: `%LOCALAPPDATA%\sp404drive\logs\S.log`.
@@ -123,6 +137,7 @@ pub fn serve(
             if let Some(report) = report.take() {
                 report(Ok(()));
             }
+            notify_tray();
         };
         serve_inner(args, &mut on_mounted)
     };
@@ -150,6 +165,11 @@ fn serve_inner(args: &MountArgs, on_mounted: &mut dyn FnMut()) -> anyhow::Result
         let _ = stop_tx.send("the SP-404MKII was disconnected".into());
     })?;
     log::info!("connected to the SP-404MKII on {}", dev.port_name());
+    // Kept for as long as the drive is served; the name goes with the last handle.
+    let _read_only = args
+        .read_only
+        .then(|| Marker::create(&read_only_event_name(mount_point)))
+        .transpose()?;
     let drive = Arc::new(Drive::new(
         Arc::new(DeviceStore::new(dev)),
         Options {
@@ -202,6 +222,104 @@ impl Drop for Running {
         unsafe {
             let _ = ReleaseMutex(self.0);
             let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+/// A named event held open to say something about a mount point.
+struct Marker(HANDLE);
+
+impl Marker {
+    fn create(name: &HSTRING) -> anyhow::Result<Self> {
+        // SAFETY: plain named-event creation; the handle is closed on drop.
+        Ok(Marker(unsafe { CreateEventW(None, true, false, name)? }))
+    }
+}
+
+impl Drop for Marker {
+    fn drop(&mut self) {
+        // SAFETY: closing the event this value owns.
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+/// A drive another process serves at a mount point, as the tray app sees it.
+pub struct Served {
+    /// The host's running mutex, as a number so the value can move to a waiting thread.
+    mutex: usize,
+    /// Whether it's mounted read-only.
+    pub read_only: bool,
+}
+
+impl Served {
+    /// The drive served at `mount_point`, if any.
+    pub fn open(mount_point: &str) -> Option<Self> {
+        // SAFETY: opening named kernel objects; the mutex is closed by `wait_until_gone`
+        // or on drop, the event at once.
+        unsafe {
+            let mutex = OpenMutexW(
+                SYNCHRONIZATION_SYNCHRONIZE,
+                false,
+                &running_mutex_name(mount_point),
+            )
+            .ok()?;
+            let read_only = match OpenEventW(
+                SYNCHRONIZATION_SYNCHRONIZE,
+                false,
+                &read_only_event_name(mount_point),
+            ) {
+                Ok(event) => {
+                    let _ = CloseHandle(event);
+                    true
+                }
+                Err(_) => false,
+            };
+            Some(Served {
+                mutex: mutex.0 as usize,
+                read_only,
+            })
+        }
+    }
+
+    /// Block until the host has ended. Lets go of the mutex at once, so the mount point
+    /// can be served again straight away.
+    pub fn wait_until_gone(self) {
+        let mutex = HANDLE(self.mutex as *mut c_void);
+        std::mem::forget(self);
+        // SAFETY: waiting on and closing the handle this value owned. The wait takes the
+        // mutex when the host lets it go (or dies), so this thread releases it.
+        unsafe {
+            let waited = WaitForSingleObject(mutex, INFINITE);
+            if waited == WAIT_OBJECT_0 || waited == WAIT_ABANDONED {
+                let _ = ReleaseMutex(mutex);
+            }
+            let _ = CloseHandle(mutex);
+        }
+    }
+}
+
+impl Drop for Served {
+    fn drop(&mut self) {
+        // SAFETY: closing the handle this value owns.
+        unsafe {
+            let _ = CloseHandle(HANDLE(self.mutex as *mut c_void));
+        }
+    }
+}
+
+/// Tell the tray app, if it's running, that a drive has been mounted.
+fn notify_tray() {
+    // SAFETY: finding a window by class and posting it a message that carries no pointers.
+    unsafe {
+        if let Ok(window) = FindWindowW(&HSTRING::from(TRAY_WINDOW_CLASS), PCWSTR::null()) {
+            let _ = PostMessageW(
+                Some(window),
+                TRAY_MOUNTED_MESSAGE,
+                Default::default(),
+                Default::default(),
+            );
         }
     }
 }

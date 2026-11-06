@@ -11,8 +11,10 @@ S:\
 ```
 
 Explorer or Finder, DAWs and the command line can browse, copy, create, rename and delete
-files on it. The Windows version is described first; the Mac version, an FSKit file system
-in a notarised app with nothing else to install, is under "macOS".
+files on it. On both, an app in the notification area (Windows) or menu bar (Mac) mounts the
+unit when it's switched on, with the same menu. The Windows version is described first: one
+installer holding everything, WinFsp included. The Mac version, an FSKit file system in a
+notarised app with nothing else to install, is under "macOS".
 
 > Not affiliated with or endorsed by Roland Corporation. "SP-404MKII" and "Roland" are
 > trademarks of Roland Corporation.
@@ -31,33 +33,72 @@ uses no CPU and none of its threads wake up.
 
 ## Requirements (Windows)
 
-- [WinFsp](https://winfsp.dev): `winget install WinFsp.WinFsp`.
-- Rust (stable, MSVC): `winget install Rustlang.Rustup`.
-- To build: libclang, which `winfsp-sys` needs to generate its bindings. Any LLVM install
-  works (`winget install LLVM.LLVM`). Otherwise, point `LIBCLANG_PATH` at a folder that
-  contains `libclang.dll`. The Doxygen install's `bin` folder has one.
-
-## Build (Windows)
-
-```
-cargo build --release
-```
-
-This builds two programs in `target\release\`, which belong in the same folder:
-
-- `sp404drive.exe`: the command you type.
-- `sp404drive-host.exe`: the drive itself, run in the background. It's built as a Windows
-  GUI program that creates no window, so it never has a window or a console, whoever
-  starts it.
+- Windows 10 or 11, 64-bit (x64). Nothing else: the installer carries
+  [WinFsp](https://winfsp.dev), the file-system driver the drive runs on, and the programs
+  carry their C runtime, so no Visual C++ Redistributable is needed either.
+- No driver for the unit: its serial port uses Windows' own USB serial driver.
 
 ## Install (Windows)
 
-Copy both into `%LOCALAPPDATA%\Programs\sp404drive\` and add that folder to your user
-PATH. To update, unmount, then copy the new pair over the old.
+Run `SP-404-Drive-<version>-windows-x64-setup.exe` (no release has been published yet;
+build it as described under "Building from source (Windows)"). It asks for administrator
+rights once, because WinFsp's driver needs them, then:
+
+- quits SP-404 Drive if it's running (which ejects the drive), so its files can be
+  replaced;
+- installs WinFsp 2.1 if this PC has no WinFsp or an older one, by running WinFsp's own
+  signed installer silently;
+- installs the programs in `C:\Program Files\Polecat Plugins\SP-404 Drive`, puts that
+  folder on the system PATH (for `sp404drive` in a terminal), and adds SP-404 Drive to the
+  Start menu;
+- starts SP-404 Drive (unless unticked on the last page), unelevated through Explorer: a
+  drive letter made by an elevated program would be invisible to your own Explorer.
+
+The first time, SP-404 Drive says it's in the notification area, with "Open SP-404 Drive at
+sign-in" ticked: leave it ticked, since the unit is only mounted on switch-on while the app
+is running. Windows 11 tucks new notification icons away under the ^ on the taskbar, and
+apps can't change that; to keep it in view, Settings > Personalisation > Taskbar > Other
+system tray icons, switch on SP-404 Drive (the message's Taskbar Settings button opens the
+page).
+
+To update, run the new installer over the old. To uninstall: Settings > Apps > Installed
+apps > SP-404 Drive. That removes everything the installer added except WinFsp, which has
+its own entry there, since other programs may use it. Settings and logs in your profile
+stay.
+
+The installer isn't signed yet, so Windows SmartScreen warns about it when it's
+downloaded.
 
 ## Use (Windows)
 
 Quit Roland's SP-404MKII app first. Only one program can use the device's link at a time.
+
+With SP-404 Drive running, switch the SP-404MKII on (or plug it in) and it's mounted on S:;
+switch it off (or unplug it) and the drive goes. The notification-area icon is the logo: a
+ring while nothing is mounted (faded when no unit is connected), a solid disc while the
+drive is mounted, dark on a light taskbar and white on a dark one. Click it (either button)
+for its menu, which is the Mac's:
+
+| Item | Does |
+|---|---|
+| (the first line) | what's going on: not connected, connected, mounted on S:, mounted read-only, mounting…, ejecting…, or why the last automatic mount failed |
+| Mount, Mount Read-Only | mount the unit on S:, and open it in File Explorer |
+| Eject | unmount; returns once everything is saved and the port is free |
+| Open in File Explorer | open S: in a File Explorer window |
+| Mount Automatically When Switched On | on by default; switch it off to mount only from the menu, for example to use Roland's app while the unit's on |
+| Open at Sign-in | start the app when you sign in (also shown under Settings > Apps > Startup) |
+| About SP-404MkII Drive | the app's name, version and a link to polecatplugins.com |
+| Quit, or Eject and Quit | quitting ejects first, as on the Mac; if the eject fails, it asks before quitting |
+
+To use Roland's app with the unit on: Eject, use Roland's app, quit it, then Mount. (After
+an Eject the unit stays unmounted until it's mounted from the menu or switched off and on.)
+
+The Mac's "Install Command-Line Tool…" and "File System Extension Settings…" have no
+Windows counterpart: the installer puts the command on the PATH, and WinFsp has nothing to
+switch on.
+
+The `sp404drive` command does the same from a terminal (open a new one after installing,
+for the new PATH):
 
 ```
 sp404drive ports               # list connected SP-404MKII units
@@ -91,13 +132,14 @@ started afresh on each mount).
 
 ### Day-to-day sequence
 
-The drive and Roland's SP-404MKII app can't use the unit at the same time. Nothing mounts
-the drive automatically, so once unmounted it stays unmounted, across unplugging the unit
-and across reboots, until you run `sp404drive mount` again. To switch to the app:
+The drive and Roland's SP-404MKII app can't use the unit at the same time. With SP-404
+Drive running, switching the unit on mounts it (unless "Mount Automatically" is off).
+Without it, only `sp404drive mount` does. To switch to Roland's app:
 
-1. `sp404drive unmount` (it waits until the drive has gone and the port is free).
+1. Eject in SP-404 Drive's menu, or `sp404drive unmount` (both wait until the drive has gone
+   and the port is free).
 2. Use Roland's app.
-3. Quit the app, then `sp404drive mount` when you want the drive back.
+3. Quit the app, then Mount (or `sp404drive mount`) when you want the drive back.
 
 If you skip step 1, the app won't find the unit, because the drive holds the port. If the
 app is still open at step 3, `mount` reports that the port is busy and asks whether the
@@ -174,10 +216,106 @@ Options:
 | `sp404drive mount` (always in the background) / `unmount` | implemented |
 | Unmount on unplug (event-driven) | implemented |
 | Mount on an empty NTFS folder instead of a letter (`sp404drive mount C:\SP404`) | implemented (WinFsp supports it); not tested yet |
-| Start at login: a shortcut to `sp404drive mount` in `shell:startup`, or a Task Scheduler task | should work as is; not tested |
-| Mount on plug-in: watch for USB `0582:02E7` and run `mount` | not yet |
+| Tray icon with the Mac's menu, mount on switch-on, open at sign-in | implemented (SP-404 Drive, `sp404drive-tray.exe`) |
 | "Map network drive" / `net use S: \\sp404\mk2`, unmounting with Explorer's *Disconnect* (registers the binary with the WinFsp Launcher and mounts with a UNC prefix) | not yet |
-| Tray icon with Mount/Unmount | not yet |
+
+### How the tray app works
+
+- **One copy per user.** Started again (from the Start menu), it opens the running copy's
+  menu instead, as the Mac app does.
+- **No polling.** It registers for serial-port device notifications (`WM_DEVICECHANGE`,
+  `GUID_DEVINTERFACE_COMPORT`) and looks at the ports only when one for USB `0582:02E7`
+  arrives or goes. The drive's process posts it a message once mounted, so a drive mounted
+  with `sp404drive mount` shows at once, and a thread of the app's waits on the drive's
+  running mutex, which wakes it when the drive ends (ejected, unit switched off, or the
+  process gone). Mounting and ejecting run on threads of their own, each a single wait
+  with a deadline.
+- **Same code as the command.** Mount and Eject call what `sp404drive mount` and `unmount`
+  call (`host::start` and `host::unmount`), so they get the same checks and messages, and
+  the drive runs in its own process, started through Explorer.
+- **Switching the unit off** needs nothing from the app, unlike on the Mac: the drive's
+  pending serial read fails at once and it unmounts itself.
+- **Read-only** shows in the menu because a read-only drive holds a named event
+  (`Local\sp404drive-read-only-S`) while it's mounted.
+- **Settings** are under `HKCU\Software\Polecat Plugins\SP-404 Drive`; Open at Sign-in is a
+  value in the user's `Run` key (switching it on in the menu also clears a switch-off made
+  in Settings > Apps > Startup).
+- **For the installer**, `sp404drive-tray.exe --quit` asks the running copy to eject and
+  quit and waits until it has (at most 90 s); `--add-to-path` and `--remove-from-path`
+  change the system PATH, keeping its type (`REG_EXPAND_SZ`) and every other entry, then
+  broadcast the change. (NSIS's own string functions stop at 1024 characters, shorter than
+  many PATHs, so it doesn't edit the PATH itself.) `--write-icon <file>` writes the app
+  icon for the installer.
+- **Icons are drawn in code** (`src/bin/sp404drive-tray/logo.rs`), at the size and DPI of
+  the notification area, as the Mac's menu-bar icon is. `build.rs` draws the app icon
+  (`app.ico`, 16 to 256 px: the ring on a light rounded square, as the Mac app icon's light
+  appearance) with the same code, and embeds it with version information in all three
+  programs, plus the tray app's manifest (common controls 6 for its dialogs, per-monitor
+  DPI awareness).
+
+## Building from source (Windows)
+
+You need:
+
+- Rust (stable, MSVC): `winget install Rustlang.Rustup`.
+- libclang, which `winfsp-sys` needs to generate its bindings. Any LLVM install works
+  (`winget install LLVM.LLVM`). Otherwise, point `LIBCLANG_PATH` at a folder that contains
+  `libclang.dll`. The Doxygen install's `bin` folder has one.
+- The Windows SDK's resource compiler (`rc.exe`), which comes with Visual Studio's C++
+  tools, for the icon and version information.
+- For the installer: [NSIS](https://nsis.sourceforge.io) 3 (`winget install NSIS.NSIS`; 3.12
+  used here).
+- To run a development build: WinFsp (`winget install WinFsp.WinFsp`), since only the
+  installer carries it.
+
+```
+cargo build --release
+```
+
+This builds three programs in `target\release\`, which belong in the same folder:
+
+- `sp404drive.exe`: the command you type.
+- `sp404drive-host.exe`: the drive itself, run in the background. It's built as a Windows
+  GUI program that creates no window, so it never has a window or a console, whoever
+  starts it.
+- `sp404drive-tray.exe`: SP-404 Drive, the notification-area app.
+
+`.cargo\config.toml` links the C runtime statically (`+crt-static`), so the programs need
+no Visual C++ Redistributable: `dumpbin /dependents` lists only Windows' own DLLs, plus
+WinFsp's for the host.
+
+The installer:
+
+```
+powershell -File windows\build-installer.ps1
+```
+
+It builds the programs (`-SkipBuild` uses those already built), downloads WinFsp's
+installer (the version pinned in the script, 2.1.25156) once into `target\installer` and
+checks its SHA-256 every time, writes the app icon and the licence page (the
+use-at-your-own-risk notice, then the GPL), and compiles `windows\installer.nsi`. The
+result is `target\installer\SP-404-Drive-<version>-windows-x64-setup.exe`, about 2.6 MB.
+Nothing is signed yet; when it is, the uninstaller needs a two-pass build (generate
+`Uninstall.exe`, sign it, then embed it), since NSIS otherwise writes it on the user's PC.
+
+### Tested (Windows tray app and installer)
+
+On 2026-11-06, on Windows 11 with WinFsp 2.1.25156 already installed, over a hand-copied
+0.1.0 that was removed first:
+
+| Test | Result |
+|---|---|
+| The installer, run by hand (administrator prompt, every page) | exit code 0; the three programs, `Uninstall.exe`, `LICENSE.txt` and `THIRD-PARTY-NOTICES.txt` in `C:\Program Files\Polecat Plugins\SP-404 Drive`; that folder on the system PATH, still `REG_EXPAND_SZ`; SP-404 Drive 0.1.1 from Polecat Plugins in Installed apps; the Start menu shortcut |
+| Start SP-404 Drive from the finish page | running unelevated, as Explorer's child |
+| The welcome message, "Open SP-404 Drive at sign-in" left ticked | the Run key holds the installed path |
+| Switch the unit on, then the menu (the user, at the unit) | mounted on S: (the unit on COM7); "all working well" |
+| `sp404drive-tray.exe --quit` with no copy running | returns at once (0.03 s), exit code 0 |
+
+Not tested yet: installing on a PC without WinFsp (or with an older one), so the bundled
+WinFsp installer has not been run; updating over a running copy with the drive mounted;
+uninstalling; SmartScreen on a downloaded copy; a fresh user account; Open at Sign-in
+across a restart; a taskbar colour change and a restart of Explorer while running; a
+second monitor at another DPI.
 
 A WinFsp drive has no "Safely Remove" or "Eject" entry. Unmounting is the equivalent.
 A drive letter created by an elevated process is invisible to the normal (non-elevated)
@@ -721,6 +859,17 @@ src/main.rs    sp404drive(.exe), the command line; src/mac_cli.rs is its macOS p
                (mount and unmount through mount -F and umount). Unit-tested.
 src/bin/sp404drive-host.rs
                sp404drive-host.exe, the windowless background process.
+src/bin/sp404drive-tray/
+               sp404drive-tray.exe, SP-404 Drive's notification-area app on Windows:
+               main.rs (the menu, mounting on switch-on, the installer's options),
+               ui.rs (the icon, menu and dialogs), settings.rs (the registry: settings,
+               Open at Sign-in, the system PATH), logo.rs (the logo drawn in code, and
+               the .ico writer, shared with build.rs).
+build.rs       WinFsp's delay-loading, and the Windows resources: the app icon, version
+               information, the tray app's manifest.
+windows/       The installer: installer.nsi (NSIS), build-installer.ps1 (builds it,
+               fetching and checking WinFsp's installer), THIRD-PARTY-NOTICES.txt.
+.cargo/        config.toml: the C runtime linked statically on Windows.
 ffi/           The macOS core as a static library with a C interface (crate sp404-ffi,
                libsp404_ffi.a): src/lib.rs (open and close the drive, items, read, write,
                space, logging; errors as errno values; panics caught), include/sp404.h,
