@@ -223,6 +223,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openExtensionSettings() { NSWorkspace.shared.open(extensionSettings) }
 
+    /// The standard About panel, cut down to the icon and two lines: the name with the
+    /// version, and a link to polecatplugins.com.
+    @objc private func showAbout() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let centred = NSMutableParagraphStyle()
+        centred.alignment = .center
+        let credits = NSMutableAttributedString(
+            string: "From ",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
+                .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: centred,
+            ])
+        credits.append(
+            NSAttributedString(
+                string: "polecatplugins.com",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
+                    .link: URL(string: "https://polecatplugins.com")!,
+                    .paragraphStyle: centred,
+                ]))
+        NSApp.activate()
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "SP-404MkII Drive \(version)",
+            // Empty, so the panel leaves out its own version line.
+            .applicationVersion: "",
+            .version: "",
+            .credits: credits,
+        ])
+    }
+
     /// Ejects, then quits. Logging out or shutting down doesn't come here: macOS
     /// unmounts the volume itself then.
     @objc private func quit() {
@@ -303,6 +334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Install Command-Line Tool…", #selector(installCommand)))
         menu.addItem(item("File System Extension Settings…", #selector(openExtensionSettings)))
         menu.addItem(.separator())
+        menu.addItem(item("About SP-404MkII Drive", #selector(showAbout)))
         menu.addItem(item(mounted ? "Eject and Quit" : "Quit SP-404 Drive", #selector(quit), enabled: idle))
     }
 

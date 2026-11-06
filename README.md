@@ -17,6 +17,12 @@ in a notarised app with nothing else to install, is under "macOS".
 > Not affiliated with or endorsed by Roland Corporation. "SP-404MKII" and "Roland" are
 > trademarks of Roland Corporation.
 
+> **Use at your own risk.** This software is provided as is, without warranty of any
+> kind, and you use it at your own risk. The software authors cannot be held responsible
+> for any loss of or damage to data, however caused. The software authors always
+> recommend taking regular backups of your work (projects, samples and everything else on
+> the unit and its card), so nothing gets lost or damaged.
+
 The drive talks to the device over its USB serial port, using the protocol mapped by
 [SparkyMK2](https://github.com/TuscanPL/SparkyMK2). Message framing and the file API's
 encoding come from SparkyMK2's `sp404-proto` crate, pinned to commit `3007b5d`. The
@@ -249,6 +255,7 @@ is mounted. Its menu:
 | Open at Login | start the app when you log in |
 | Install Command-Line Tool… | link `sp404drive` into `/usr/local/bin` |
 | File System Extension Settings… | the System Settings page where the extension is switched on |
+| About SP-404MkII Drive | the app's name, version and a link to polecatplugins.com |
 | Quit, or Eject and Quit | quitting ejects first: with the app gone, switching the unit off wouldn't eject the drive |
 
 To use Roland's app with the unit on: Eject, use Roland's app, quit it, then Mount. (After
@@ -786,5 +793,7 @@ browsing both volumes, reading and writing files, renaming and deleting, unmount
 
 ## License
 
-GPL-3.0-or-later (see `LICENSE`). It uses SparkyMK2's GPL-3.0 `sp404-proto` crate, and
-`src/link/mod.rs` follows its `sp404-device` file API code.
+GPL-3.0-or-later (see `LICENSE`), including its Disclaimer of Warranty and Limitation
+of Liability (sections 15 and 16); see also "Use at your own risk" at the top. It uses
+SparkyMK2's GPL-3.0 `sp404-proto` crate, and `src/link/mod.rs` follows its
+`sp404-device` file API code.
