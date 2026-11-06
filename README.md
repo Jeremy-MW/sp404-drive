@@ -26,9 +26,9 @@ Windows 10 or 11, 64-bit. Nothing else: the installer includes everything.
 
 ### Install
 
-1. Run `SP-404-Drive-<version>-windows-x64-setup.exe`. (No Windows release has been
-   published yet; see [docs/building.md](docs/building.md).) It asks for administrator
-   rights once.
+1. Download `SP-404-Drive-<version>-windows-x64-setup.exe` from the
+   [releases page](https://github.com/Jeremy-MW/sp404-drive/releases) and run it. It asks
+   for administrator rights once.
 2. When it's finished, SP-404 Drive starts and says it's in the notification area. Leave
    **Open SP-404 Drive at sign-in** ticked: the drive only appears by itself while the app
    is running.
